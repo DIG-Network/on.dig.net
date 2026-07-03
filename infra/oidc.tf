@@ -62,8 +62,14 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["arn:aws:dynamodb:${var.region}:${local.acct}:table/${var.lock_table}"]
   }
   statement {
-    sid       = "ReadSharedTable"
-    actions   = ["dynamodb:DescribeTable"]
+    # The aws_dynamodb_table data source reads the table + its continuous-backups, TTL, and tags.
+    sid = "ReadSharedTable"
+    actions = [
+      "dynamodb:DescribeTable",
+      "dynamodb:DescribeContinuousBackups",
+      "dynamodb:DescribeTimeToLive",
+      "dynamodb:ListTagsOfResource",
+    ]
     resources = ["arn:aws:dynamodb:${var.region}:${local.acct}:table/${var.dighub_table_name}"]
   }
   statement {
@@ -111,6 +117,21 @@ data "aws_iam_policy_document" "deploy" {
     sid       = "ReadOidcProvider"
     actions   = ["iam:GetOpenIDConnectProvider"]
     resources = [data.aws_iam_openid_connect_provider.github.arn]
+  }
+  statement {
+    # The aws_iam_openid_connect_provider data source resolves the provider BY URL, which lists all
+    # providers first (a list op with no resource-level scoping).
+    sid       = "ListOidcProviders"
+    actions   = ["iam:ListOpenIDConnectProviders"]
+    resources = ["*"]
+  }
+  statement {
+    # DescribeLogGroups is a prefix-list op that AWS evaluates against `log-group::log-stream:`, so it
+    # cannot be scoped to a specific group ARN. It is a read-only list; the WRITE log actions above
+    # stay scoped to this service's groups.
+    sid       = "LogsDescribe"
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
   }
   statement {
     # CloudFront + API Gateway have no resource-level ARNs for most create/get actions.
