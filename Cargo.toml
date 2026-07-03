@@ -1,0 +1,45 @@
+[package]
+name = "on-dig-net-resolver"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94.1"
+license = "GPL-2.0-only"
+repository = "https://github.com/DIG-Network/on.dig.net"
+description = "*.on.dig.net resolver: maps a subdomain to a pinned DIG URN and serves an HTML+service-worker loader."
+publish = false
+
+[lib]
+name = "on_dig_net_resolver"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Lambda/AWS deps — only pulled in for the `bootstrap` binary (feature-gated so `cargo test` /
+# `cargo clippy` on the pure lib stay dependency-light and host-buildable).
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-dynamodb = { version = "1", optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"], optional = true }
+lambda_http = { version = "0.13", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+[features]
+default = []
+net = ["dep:lambda_http", "dep:tokio"]
+aws = ["net", "dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tracing", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "bootstrap"
+path = "src/bin/bootstrap.rs"
+required-features = ["aws", "net"]
+
+# Mirror the ecosystem Lambda release profile: small, fast-cold-start arm64 zip.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true
