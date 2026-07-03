@@ -1,0 +1,30 @@
+# on.dig.net
+
+> The `*.on.dig.net` subdomain resolver: a standalone AWS service (CloudFront + API Gateway + Lambda
+> + a dedicated S3 asset bucket) that maps a DIG subdomain to a pinned DIG URN and serves a
+> first-party, client-side-decrypting loader. It only READS domain pins from the shared `dighub`
+> DynamoDB table (written by hub.dig.net); it never writes, holds no signing key, builds no spend.
+
+This repository has no web pages to index — every `*.on.dig.net` host serves an individual user's
+decrypted store content, rendered in the browser. This file is a machine map of the SERVICE + repo.
+
+## How resolution works
+- CloudFront routes a request by its HTTP `Host` header. A viewer-request function copies `Host` →
+  `x-dig-host` (CloudFront rewrites `Host` to the origin), which the Lambda reads.
+- `<label>.on.dig.net` → the Lambda looks up `DOMAIN#<label>` in DynamoDB; an attached custom domain
+  → `CUSTOMDOM#<host>` (only `status:"active"` resolves) → serves the linked subdomain's content.
+- `GET /` returns a STATIC branded loader shell instantly (no per-request table lookup). The shell
+  fetches `GET /__dig/config.json` async for the status + pin, then decrypts + renders client-side.
+
+## Key routes
+- `GET /` → static loader shell (HTML, LOADER_CSP).
+- `GET /__dig/config.json` → `{ "status": "active|available|pending|expired|revoked", … pin … }` (JSON).
+- `GET /__dig/dig_client.js`, `GET /__dig/dig_client_bg.wasm`, `GET /__dig/dig-embed.js`, `GET /__dig_sw.js`, `GET /dig-client/dig_client.js`, `GET /dig-client/dig_client_bg.wasm` → static assets from S3.
+
+## Source map
+- [SPEC.md](SPEC.md): the normative contract (host resolution, routes, the config.json shape, the Domain wire record, the two CSP trust contexts, the edge contract).
+- [README.md](README.md): overview + develop/deploy quickstart.
+- [runbooks/deploy.md](runbooks/deploy.md): deploy targets, credentials, the zero-downtime `*.on.dig.net` cutover.
+- [runbooks/local.md](runbooks/local.md): local test/lint/run.
+- `src/lib.rs`: pure resolver logic. `src/domain.rs`: the DynamoDB read contract. `src/bin/bootstrap.rs`: the Lambda.
+- `infra/`: the terraform stack. `assets/`: the served artifacts (committed).

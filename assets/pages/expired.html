@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<title>__SUB__.on.dig.net — expired</title>
+<style>
+  /* DIG Network brand tokens (dark theme). All CSS inline + self-contained — no external fetch. */
+  :root {
+    --dig-purple: #7a3dff; --dig-purple-hover: #9466ff; --dig-magenta: #ff00de;
+    --bg: #0b0a12; --surface: #16131f; --border: #2a2440;
+    --text: #fff; --muted: #a99fc4; --faint: #7e769b; --danger: #ef5570;
+    --shadow-pop: 0 24px 70px rgba(0,0,0,.6);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text); min-height: 100dvh;
+    font-family: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; line-height: 1.55;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+    background-image:
+      radial-gradient(820px 560px at 50% 38%, rgba(122,61,255,.16), rgba(11,10,18,0) 62%),
+      radial-gradient(520px 360px at 50% 38%, rgba(255,0,222,.06), rgba(11,10,18,0) 60%);
+    background-repeat: no-repeat;
+  }
+  .card {
+    position: relative; width: min(92vw, 460px);
+    padding: 38px 36px 34px; border-radius: 18px;
+    background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,0)), var(--surface);
+    border: 1px solid var(--border); box-shadow: var(--shadow-pop); overflow: hidden;
+  }
+  .card::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--dig-purple) 35%, var(--dig-magenta) 65%, transparent);
+    opacity: .85;
+  }
+  .mark {
+    font-size: 24px; font-weight: 700; letter-spacing: 1px; margin: 0 0 22px;
+    background: linear-gradient(135deg, #9466ff, #ff00de);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  /* "Network" carries its OWN explicit fill so it never inherits the parent's color:transparent /
+     clipped gradient (that rendered it the same color as the background — invisible). --muted
+     (#a99fc4) on the #16131f card clears WCAG AA. */
+  .mark .net { font-weight: 500; -webkit-text-fill-color: var(--muted); color: var(--muted); }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px; margin-bottom: 16px;
+    font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    padding: .34em .7em; border-radius: 999px;
+    color: #f7a8b5; background: rgba(239,85,112,.12); border: 1px solid rgba(239,85,112,.38);
+  }
+  .badge .dotmark { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 14px; line-height: 1.35; }
+  code {
+    font-family: "Space Mono", ui-monospace, monospace; font-size: .92em;
+    background: rgba(122,61,255,.14); border: 1px solid var(--border);
+    border-radius: 6px; padding: .08em .42em; color: #d8ccff;
+  }
+  p { color: var(--muted); font-size: 14.5px; margin: 0 0 14px; }
+  a { color: var(--dig-purple-hover); font-weight: 600; }
+</style>
+</head>
+<body>
+  <main class="card">
+    <p class="mark">DIG<span class="net">&nbsp;Network</span></p>
+    <span class="badge"><span class="dotmark"></span>Expired</span>
+    <h1><code>__SUB__.on.dig.net</code> has expired</h1>
+    <p>This handle's registration has expired. The owner can renew it at hub.dig.net/domains.</p>
+    <p>Once renewed, content will be available again within minutes.</p>
+    <p><a href="https://hub.dig.net/domains">Renew at hub.dig.net &rarr;</a></p>
+  </main>
+</body>
+</html>

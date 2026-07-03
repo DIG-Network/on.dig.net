@@ -1,0 +1,82 @@
+name: deploy
+
+# CI-driven deploy via GitHub Actions OIDC: build the resolver Lambda zip, publish the static loader
+# assets to this service's OWN S3 bucket, then `terraform apply` into the single prod account. No
+# stored long-lived keys. Merging to `main` auto-deploys; workflow_dispatch allows a manual re-deploy.
+#
+# REQUIRED repo configuration (Settings → Secrets and variables → Actions → Variables):
+#   • CI_DEPLOY_ROLE_ARN — the on-dig-net-ci-deploy role ARN (terraform output ci_deploy_role_arn)
+#   • TF_STATE_BUCKET     — dighub-tfstate
+#   • TF_LOCK_TABLE       — dighub-tflock
+# and a `production` environment (gates the apply).
+
+on:
+  push:
+    branches: [main]
+    # Backend/infra rebuild triggers. App-less service: any source, asset, or infra change deploys.
+    paths:
+      - "src/**"
+      - "assets/**"
+      - "infra/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - "rust-toolchain.toml"
+      - "publish-assets.sh"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # OIDC (AWS role)
+
+# Serialize applies (state lock); never cancel an in-flight apply.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: build + publish + terraform apply
+    runs-on: ubuntu-latest
+    environment: production # requires the environment's protection rules
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+      - name: install cargo-lambda + zig (arm64 cross-compile)
+        run: pip install cargo-lambda ziglang
+      - name: build resolver lambda zip (arm64)
+        id: build
+        run: |
+          set -euo pipefail
+          cargo lambda build --release --arm64 --features aws --bin bootstrap --output-format zip
+          zip="$PWD/target/lambda/bootstrap/bootstrap.zip"
+          test -f "$zip" || { echo "::error::bootstrap.zip not produced"; exit 1; }
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "hash=$(openssl dgst -sha256 -binary "$zip" | openssl base64 -A)" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.CI_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: publish static loader assets to the dedicated bucket
+        run: BUCKET=on-dig-net-assets bash publish-assets.sh
+      - name: terraform init
+        run: terraform -chdir=infra init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="dynamodb_table=${{ vars.TF_LOCK_TABLE }}" -backend-config="region=us-east-1"
+      - name: terraform apply
+        run: |
+          terraform -chdir=infra apply -auto-approve -no-color \
+            -var "lambda_package_path=${{ steps.build.outputs.zip }}" \
+            -var "lambda_source_code_hash=${{ steps.build.outputs.hash }}"
+      # Invalidate the static asset paths so a changed stable-path byte is served immediately.
+      - name: invalidate changed asset paths
+        run: |
+          DIST=$(terraform -chdir=infra output -raw distribution_id)
+          aws cloudfront create-invalidation --distribution-id "$DIST" --paths '/__dig/*' '/__dig_sw.js' '/dig-client/*' >/dev/null
+          echo "invalidation requested on $DIST"

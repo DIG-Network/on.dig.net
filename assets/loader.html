@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <meta name="color-scheme" content="dark" />
+  <title>Loading…</title>
+  <!--
+    *.on.dig.net resolver loader.
+
+    This document is now built around the SHARED DIG Network embed snippet (dig-embed.js), so the
+    subdomain resolver path and the embed-anywhere path use ONE implementation. The resolver serves
+    the snippet SAME-ORIGIN at /__dig/dig-embed.js, so the snippet selects TIER 1 (a module service
+    worker that intercepts + decrypts every request — the original, confirmed-working resolver model).
+
+    BRANDED LOADER (no color-bleed): the document paints its OWN crisp, contained DIG-branded
+    loading CARD immediately — a centered surface on a clean dark backdrop with a single contained
+    radial glow BEHIND the card (it never reaches the page edges). This removes the prior flash of an
+    unstyled white body and gives a polished luxury look BEFORE dig-embed.js paints its own overlay.
+    The embed overlay shares this exact palette, so the two are seamless; once content resolves both
+    are replaced by the decrypted document. All CSS is inline (offline-friendly — no external fetch).
+
+    PRESERVED behaviours (the things that make the live subdomain render):
+      • Same-origin dig-client WASM under /__dig/* with SRI (the Lambda serves them; the SW + snippet
+        verify the SHA-256 before running crypto).
+      • The SW is an ES-module worker registered { type:"module" } (Chrome/Edge/Safari 16.4+).
+        Firefox lacks module service workers → the snippet detects no module-worker support and shows
+        an honest message rather than silently failing.
+      • The server injects the pinned-URN config (window.__DIG__) so the snippet can build the URN and
+        the SW reads /__dig/config.json (host-header → subdomain → pin is resolved server-side).
+      • CloudFront rewrites Host; the Lambda reads x-dig-host; the resolver keeps its OWN permissive
+        response-headers/CSP policy (loader + SW + WASM, connect-src rpc.dig.net) — never rpc's
+        default-src 'none'; sandbox.
+  -->
+  <style>
+    /* DIG Network brand tokens (dark theme — apps/web/app/globals.css :root + [data-theme=dark]). */
+    :root {
+      --dig-purple: #7a3dff;
+      --dig-magenta: #ff00de;
+      --bg: #0b0a12;
+      --surface: #16131f;
+      --border: #2a2440;
+      --text: #ffffff;
+      --muted: #a99fc4;
+      --faint: #7e769b;
+      --shadow-pop: 0 24px 70px rgba(0, 0, 0, 0.6);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      /* A single contained radial glow centred behind the card. It fades fully to the page bg well
+         before the viewport edges, so the colour never bleeds — the backdrop reads as clean black. */
+      background-image:
+        radial-gradient(820px 560px at 50% 42%, rgba(122, 61, 255, 0.16), rgba(11, 10, 18, 0) 62%),
+        radial-gradient(520px 360px at 50% 42%, rgba(255, 0, 222, 0.06), rgba(11, 10, 18, 0) 60%);
+      background-repeat: no-repeat;
+    }
+    .dig-card {
+      position: relative;
+      width: min(92vw, 380px);
+      padding: 40px 36px 34px;
+      border-radius: 18px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)) ,
+        var(--surface);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-pop);
+      text-align: center;
+      /* A whisper of the brand on the card's top edge — crisp, not a glow. */
+      overflow: hidden;
+    }
+    .dig-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--dig-purple) 35%, var(--dig-magenta) 65%, transparent);
+      opacity: 0.85;
+    }
+    .dig-logo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 22px;
+      height: 56px;
+    }
+    .dig-logo svg { display: block; height: 56px; width: auto; }
+    .dig-spinner {
+      width: 44px;
+      height: 44px;
+      margin: 0 auto 24px;
+      border-radius: 50%;
+      /* Contained ring: a faint purple track with a single crisp purple arc — no bloom/halo. */
+      border: 3px solid rgba(122, 61, 255, 0.18);
+      border-top-color: var(--dig-purple);
+      animation: digspin 0.85s cubic-bezier(0.5, 0.1, 0.5, 0.9) infinite;
+    }
+    @keyframes digspin { to { transform: rotate(360deg); } }
+    .dig-msg {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text);
+      letter-spacing: 0.1px;
+      margin: 0 0 8px;
+      line-height: 1.5;
+    }
+    .dig-sub {
+      font-size: 12.5px;
+      /* --muted (not --faint): --faint (#7e769b) on the #16131f card is ~3.5:1 and blends; --muted
+         (#a99fc4) clears WCAG AA for this small subtext. */
+      color: var(--muted);
+      letter-spacing: 0.2px;
+      margin: 0;
+    }
+    /* --faint, not --border: the dot separator on --border (#2a2440) was ~1.2:1 — invisible. */
+    .dig-sub .dot { color: var(--faint); margin: 0 6px; }
+    @media (prefers-reduced-motion: reduce) {
+      .dig-spinner { animation: none; }
+    }
+  </style>
+  <script>
+    // #206b — INSTANT LOADER: this document is a STATIC branded shell served immediately (the Lambda
+    // does NO per-store DynamoDB lookup and bakes NO pin), so the branded card below paints on
+    // response latency alone. The pin + status are resolved ASYNC by fetching /__dig/config.json —
+    // never blocking the first paint on a backend round-trip, and never waiting on the first content
+    // chunk. The shell is byte-identical for every subdomain and every Active store (the subdomain
+    // lives in window.location.hostname), so it is edge-cacheable.
+    //
+    // "NEVER BLANK" contract (#206): this document already paints its OWN branded loading card in
+    // <body> (below) on first paint. Signal that to dig-embed.js so it REUSES this shell instead of
+    // stacking a second full-screen overlay on top of it. A duplicate overlay whose wordmark uses
+    // background-clip:text could render blank and cover the good card → white screen. With the flag
+    // set, a slow / blocked / failed embed script (dead SW/WASM/RPC) leaves THIS branded card
+    // visible rather than a blank overlay.
+    window.__digLoaderShellPresent = true;
+    // Non-active status copy — mirrors services/resolver/assets/pages/{pending,expired,revoked,
+    // available}.html. On a non-active status (or a config fetch that fails/404s) we swap the
+    // branded card's message to the matching copy WITHOUT navigating away: the branded shell stays,
+    // only the message + optional CTA change. Keeps the "never blank" invariant for every state.
+    window.__digStatusCopy = {
+      pending: {
+        badge: "Pending",
+        title: "is confirming",
+        msg: "This domain's registration is confirming on‑chain — check back in a few minutes.",
+      },
+      expired: {
+        badge: "Expired",
+        title: "has expired",
+        msg: "This handle's registration has expired. The owner can renew it at hub.dig.net/domains.",
+      },
+      revoked: {
+        badge: "Revoked",
+        title: "has been taken down",
+        msg: "This domain is no longer serving content.",
+      },
+      available: {
+        badge: "Available",
+        title: "is available",
+        msg: "Reserve this handle on the DIG Network.",
+        cta: "Reserve",
+      },
+      error: {
+        badge: "Unavailable",
+        title: "is temporarily unavailable",
+        msg: "Please try again in a moment. If the problem persists, the domain may not be configured correctly.",
+      },
+    };
+    // Resolve status + pin from the authoritative endpoint, ASYNC — the branded card is already
+    // painting. On "active" we build the URN and hand it to dig-embed.js (window.digurn), which
+    // decrypts + renders the content (streaming as chunks arrive). On any other status we render the
+    // status message on THIS shell. dig-embed.js loads deferred at the end of <body>; it polls
+    // briefly for window.digurn, so setting it here (before or after the embed runs) is picked up.
+    (function () {
+      var host = "";
+      try { host = window.location.hostname || ""; } catch (e) {}
+      var sub = host.split(".")[0] || "this domain";
+      function applyStatus(kind) {
+        try {
+          var copy = (window.__digStatusCopy && window.__digStatusCopy[kind]) || window.__digStatusCopy.error;
+          window.__digShellInert = true; // tell dig-embed.js not to show its own "no content" state
+          var card = document.querySelector(".dig-card");
+          if (!card) { document.addEventListener("DOMContentLoaded", function () { applyStatus(kind); }); return; }
+          var spin = card.querySelector(".dig-spinner");
+          if (spin) spin.style.display = "none";
+          var msg = card.querySelector(".dig-msg");
+          if (msg) msg.textContent = sub + ".on.dig.net " + copy.title;
+          var subEl = card.querySelector(".dig-sub");
+          if (subEl) subEl.textContent = copy.msg;
+          card.setAttribute("aria-busy", "false");
+        } catch (e) {}
+      }
+      window.__digApplyStatus = applyStatus;
+      fetch("/__dig/config.json", { headers: { accept: "application/json" } })
+        .then(function (r) { return r.ok ? r.json() : { status: "error" }; })
+        .catch(function () { return { status: "error" }; })
+        .then(function (c) {
+          c = c || {};
+          if (c.status === "active" && c.storeId) {
+            var urn = "urn:dig:chia:" + c.storeId + (c.root ? ":" + c.root : "") + "/index.html";
+            if (c.salt) urn += "?salt=" + c.salt;
+            window.__DIG__ = c;
+            window.digurn = urn; // dig-embed.js picks this up and loads the content
+          } else {
+            applyStatus(c.status || "error");
+          }
+        });
+    })();
+  </script>
+</head>
+<body>
+  <main class="dig-card" role="status" aria-live="polite" aria-busy="true">
+    <div class="dig-logo" aria-hidden="true">
+      <!-- Inline DIG wordmark — crisp vector, no external fetch. Brand purple with one magenta accent. -->
+      <svg viewBox="0 0 132 48" role="img" aria-label="DIG Network">
+        <defs>
+          <linearGradient id="digg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#9466ff" />
+            <stop offset="0.55" stop-color="#7a3dff" />
+            <stop offset="1" stop-color="#ff00de" />
+          </linearGradient>
+        </defs>
+        <text x="0" y="38" font-family="'Space Grotesk', system-ui, sans-serif"
+              font-size="44" font-weight="700" letter-spacing="1.5" fill="url(#digg)">DIG</text>
+      </svg>
+    </div>
+    <div class="dig-spinner"></div>
+    <p class="dig-msg">Loading content from the DIG Network…</p>
+    <p class="dig-sub">Decrypting client&#8209;side<span class="dot">·</span>powered by Chia</p>
+  </main>
+  <noscript>This DIG domain requires JavaScript to load its content.</noscript>
+  <!--
+    The shared embed snippet, served SAME-ORIGIN by the resolver (so Tier 1 SW is available). It is
+    loaded at the END of <body> with `defer` (#206) so the branded card above ALWAYS paints FIRST.
+    If this script is slow, blocked, or fails (dead SW/WASM/RPC), the branded loader stays on screen
+    instead of a blank overlay. Because window.__digLoaderShellPresent is set (in <head>), the snippet
+    reuses this already-painted shell rather than stacking its own full-screen overlay.
+  -->
+  <script src="/__dig/dig-embed.js" defer></script>
+</body>
+</html>
