@@ -12,18 +12,8 @@ name: deploy
 
 on:
   push:
-    branches: [main]
-    # Backend/infra rebuild triggers. App-less service: any source, asset, or infra change deploys.
-    paths:
-      - "src/**"
-      - "assets/**"
-      - "infra/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      - "rust-toolchain.toml"
-      - "publish-assets.sh"
-      - ".github/workflows/deploy.yml"
+    # Tag-driven release (CLAUDE.md §3.6): the release workflow tags vX.Y.Z on merge; that tag deploys.
+    tags: ['v*']
   workflow_dispatch: {}
 
 permissions:
