@@ -5,11 +5,13 @@
 | Thing | Target |
 |---|---|
 | resolver Lambda | `on-dig-net-resolver` (arm64, `provided.al2023`), fronted by API Gateway HTTP API `on-dig-net-resolver` |
+| chain-change watcher Lambda (#33) | `on-dig-net-watcher` (arm64, `provided.al2023`), triggered by EventBridge Scheduler `on-dig-net-watcher` (`rate(1 minute)`) — see `SPEC.md` §10 |
+| watcher's OWN state table | DynamoDB `on-dig-net-watcher-state` (last-known chain tip per store; NEVER the shared `dighub` table) |
 | static loader assets | S3 bucket `on-dig-net-assets` (dedicated — NEVER the hub web bucket), served via CloudFront OAC |
 | edge | CloudFront distribution `E34LO4V5L4RTHE` (`d1a7itvbih8xco.cloudfront.net`), alias `*.on.dig.net`, no WAF, IPv6 |
 | DNS | Route53 zone `Z09143862Q3QQA5P9F8QY` (dig.net): wildcard `*.on.dig.net` A + AAAA alias → the distribution |
 | TLS | ACM cert `arn:…:certificate/3966954e-faab-4c81-86cf-adf91dccb93f` (`*.on.dig.net`, us-east-1; shared — a cert may back multiple dists) |
-| data | READ-ONLY `GetItem` on the shared `dighub` DynamoDB table (domain pins written by hub.dig.net) |
+| data | READ-ONLY `GetItem`/`Scan` on the shared `dighub` DynamoDB table (domain pins written by hub.dig.net; the watcher's `Scan` is also strictly read-only) |
 | terraform state | `s3://dighub-tfstate/on.dig.net/prod/terraform.tfstate`, lock table `dighub-tflock` |
 
 ## Credentials / secrets
@@ -23,10 +25,13 @@
 ## Normal deploy (CI)
 
 Merge to `main` (or run the `deploy` workflow manually). `deploy.yml`:
-1. builds the arm64 Lambda zip (`cargo lambda build … --features aws`),
+1. builds the resolver + watcher arm64 Lambda zips (`cargo lambda build … --features aws --bin bootstrap` / `--bin watcher`),
 2. publishes the static assets to `on-dig-net-assets` (`publish-assets.sh`),
-3. `terraform apply` (S3 backend),
+3. `terraform apply` (S3 backend) — creates/updates BOTH Lambdas + the watcher's state table + its EventBridge schedule,
 4. invalidates `/__dig/*` `/__dig_sw.js` `/dig-client/*`.
+
+The chain-change watcher (#33) needs no manual verification step beyond the deploy going green —
+its own EventBridge schedule starts ticking immediately once the Lambda + IAM role exist.
 
 Watch it to green: `gh run watch <id>`.
 
@@ -34,11 +39,16 @@ Watch it to green: `gh run watch <id>`.
 
 ```bash
 cargo lambda build --release --arm64 --features aws --bin bootstrap --output-format zip
+cargo lambda build --release --arm64 --features aws --bin watcher --output-format zip
 cd infra
 terraform init -backend-config="bucket=dighub-tfstate" -backend-config="dynamodb_table=dighub-tflock" -backend-config="region=us-east-1"
 ZIP="$(cygpath -w ../target/lambda/bootstrap/bootstrap.zip)"   # plain path on Linux/macOS
 HASH="$(openssl dgst -sha256 -binary ../target/lambda/bootstrap/bootstrap.zip | openssl base64 -A)"
-terraform apply -var "lambda_package_path=$ZIP" -var "lambda_source_code_hash=$HASH"
+WATCHER_ZIP="$(cygpath -w ../target/lambda/watcher/bootstrap.zip)"
+WATCHER_HASH="$(openssl dgst -sha256 -binary ../target/lambda/watcher/bootstrap.zip | openssl base64 -A)"
+terraform apply \
+  -var "lambda_package_path=$ZIP" -var "lambda_source_code_hash=$HASH" \
+  -var "watcher_lambda_package_path=$WATCHER_ZIP" -var "watcher_lambda_source_code_hash=$WATCHER_HASH"
 cd .. && BUCKET=on-dig-net-assets bash publish-assets.sh
 ```
 
@@ -58,6 +68,19 @@ curl -sS -D - -o /dev/null "https://chia-offer.on.dig.net/__dig_sw.js" | grep -i
 Test the distribution BEFORE it owns the alias (e.g. a new dist) via its CloudFront domain + a Host
 header (CloudFront routes by the `Host` header): `curl -H "Host: chia-offer.on.dig.net"
 https://<dXXXX>.cloudfront.net/`.
+
+## Verify the chain-change watcher (#33) is ticking
+
+```bash
+aws lambda get-function --function-name on-dig-net-watcher --query 'Configuration.State'
+aws scheduler get-schedule --name on-dig-net-watcher --query 'State'
+aws logs tail /aws/lambda/on-dig-net-watcher --since 5m   # look for "chain-change watcher tick complete"
+aws dynamodb scan --table-name on-dig-net-watcher-state --max-items 5   # last-known tips it has recorded
+```
+
+The watcher never writes the shared `dighub` table and never invalidates per-subdomain (see
+`SPEC.md` §10.2–10.3) — a healthy tick log line with `invalidated:false` most of the time is
+expected; `invalidated:true` should correlate with an actual on-chain commit to a tracked store.
 
 ## Updating the read-crypto WASM (deliberate)
 

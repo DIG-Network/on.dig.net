@@ -196,3 +196,68 @@ digstore `SPEC.md`):
   model exists to prevent. Persistence is best-effort (a private-mode/quota failure never blocks
   serving content already handed to the page) and happens AFTER the response has already been sent
   (via `event.waitUntil`), so it never delays the visible response.
+
+## 10. Chain-change watcher (proactive edge invalidation)
+
+A lightweight, cheap, EventBridge-scheduled Lambda (`src/bin/watcher.rs`, `infra/watcher.tf`)
+invalidates the resolver's two DYNAMIC CloudFront paths — `/` and `/__dig/config.json` — the
+moment it detects that a served store's on-chain singleton lineage has advanced, instead of
+relying solely on their passive `max-age` (§7: 300s / 30s). The pure decision core
+(`src/watcher.rs`) is unit-tested independently of AWS.
+
+### 10.1 What it tracks
+
+Once per minute (`rate(1 minute)`), the watcher:
+
+1. `Scan`s the shared `dighub` table (READ-ONLY — the SAME least-privilege posture as the
+   resolver's `GetItem`, extended to `Scan`; never a write) for every `DOMAIN#*`/`META` row and
+   reduces them to the distinct `pinned_store_id`s backing a currently `Active`, non-reclaimable
+   domain (i.e. exactly the stores whose subdomain the resolver would actually serve).
+2. For each distinct store id, reads the store's singleton lineage TIP COIN via a minimal
+   coinset.org HTTP client (`get_coin_record_by_name` + `get_coin_records_by_parent_ids` — no
+   CHIP-0035 puzzle decode). A store's content root changes IF AND ONLY IF its singleton lineage
+   advances (a commit spends the tip and creates a successor), so the tip coin id is a cheap,
+   sufficient proxy for "did the root change" — the watcher never needs to decode the root's
+   actual value.
+3. Compares the observed tip to the LAST-KNOWN tip recorded in this service's OWN dedicated
+   DynamoDB table (`on-dig-net-watcher-state`; NEVER the shared `dighub` table). A change fires
+   ONE coalesced `cloudfront:CreateInvalidation` for the tick (regardless of how many stores
+   changed) and persists the new tip. No prior record (first observation) only establishes the
+   baseline — it never invalidates, since a store the watcher has never checked cannot have gone
+   stale under a cache the watcher controls. A definitive melt (the lineage terminates with no
+   unspent successor) invalidates once and is remembered so later ticks skip the chain read for
+   that store.
+
+### 10.2 Why this never writes `pinned_root`
+
+`pinned_root` (§5: `None` = track latest, `Some` = an owner-locked frozen snapshot) is changed
+ONLY by the domain owner's explicit re-pin action in the hub.dig.net control plane — no code path,
+including hub's own anchor-watcher, ever writes it automatically. For a track-latest (`None`)
+domain, `/__dig/config.json` already always serves `root:null` regardless of chain state (the
+browser resolves "latest" live via `rpc.dig.net` on every read, §9), so there is nothing to
+update. For an owner-locked (`Some`) domain, the lock is a deliberate freeze; silently advancing
+it would overwrite the owner's choice. The watcher therefore ONLY ever triggers invalidation — it
+holds no write permission on the shared table at all.
+
+### 10.3 Why invalidation cannot be scoped to a single subdomain
+
+`/` and `/__dig/config.json` are cached under the SAME path for every `*.on.dig.net` subdomain,
+differentiated only by the `x-dig-host` cache-key HEADER (§7). CloudFront's `CreateInvalidation`
+API discriminates by path (and optional query string), never by header, so there is no way to
+invalidate "only `foo.on.dig.net`'s cached config.json" without changing the cache-key strategy to
+encode the subdomain in the path or query string. The watcher therefore invalidates the two
+dynamic paths distribution-wide, coalesced to at most once per tick. This stays cheap: CloudFront
+bills invalidations per path, not per cached header-variant, and the watcher never touches the
+long-TTL immutable static-asset paths (`/__dig/*`, `/__dig_sw.js`, `/dig-client/*`).
+
+### 10.4 Why coinset.org, not `chia-query` or the CHIP-0035 decode
+
+`chia_query::ChiaQuery::new()` requires a live P2P peer connection (a wallet TLS keypair) to
+construct, unsuitable for a stateless scheduled Lambda cold start. `digstore-chain`'s CHIP-0035
+decode pulls in the full `chia-wallet-sdk`/CLVM stack, heavier than this watcher needs since it
+only has to detect a POSSIBLE root change, never read the root's value. The watcher instead uses
+`chia-protocol` (wire types only, no CLVM interpreter) to compute a child coin's id from the
+`{parent_coin_info, puzzle_hash, amount}` triple coinset.org returns, and plain `reqwest` with
+standard TLS (no SPKI pinning): the worst case of a spoofed response here is an
+unnecessary-but-harmless invalidation, not a fund-loss or content-integrity issue (contrast
+hub.dig.net's anchor-watcher, whose chain reads gate real-money confirmations).

@@ -89,9 +89,34 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["arn:aws:s3:::${var.asset_bucket_name}", "arn:aws:s3:::${var.asset_bucket_name}/*"]
   }
   statement {
-    sid       = "Lambda"
-    actions   = ["lambda:*"]
-    resources = ["arn:aws:lambda:${var.region}:${local.acct}:function:on-dig-net-resolver"]
+    sid     = "Lambda"
+    actions = ["lambda:*"]
+    resources = [
+      "arn:aws:lambda:${var.region}:${local.acct}:function:on-dig-net-resolver",
+      "arn:aws:lambda:${var.region}:${local.acct}:function:on-dig-net-watcher",
+    ]
+  }
+  statement {
+    # The chain-change watcher's OWN state table (#33, watcher.tf) — a dedicated resource this
+    # service owns and manages, distinct from the shared (hub-owned, read-only) dighub table.
+    sid = "WatcherStateTable"
+    actions = [
+      "dynamodb:CreateTable", "dynamodb:DeleteTable", "dynamodb:DescribeTable",
+      "dynamodb:UpdateTable", "dynamodb:TagResource", "dynamodb:UntagResource",
+      "dynamodb:ListTagsOfResource", "dynamodb:DescribeContinuousBackups",
+      "dynamodb:DescribeTimeToLive", "dynamodb:UpdateContinuousBackups",
+    ]
+    resources = ["arn:aws:dynamodb:${var.region}:${local.acct}:table/on-dig-net-watcher-state"]
+  }
+  statement {
+    # EventBridge Scheduler driving the watcher's 1-minute tick (#33, watcher.tf).
+    sid = "WatcherSchedule"
+    actions = [
+      "scheduler:CreateSchedule", "scheduler:GetSchedule", "scheduler:UpdateSchedule",
+      "scheduler:DeleteSchedule", "scheduler:TagResource", "scheduler:UntagResource",
+      "scheduler:ListTagsForResource",
+    ]
+    resources = ["arn:aws:scheduler:${var.region}:${local.acct}:schedule/default/on-dig-net-watcher"]
   }
   statement {
     sid = "IamForServiceRoles"
@@ -146,7 +171,11 @@ data "aws_iam_policy_document" "deploy" {
       "logs:PutRetentionPolicy", "logs:TagResource", "logs:UntagResource",
       "logs:ListTagsForResource", "logs:TagLogGroup", "logs:ListTagsLogGroup",
     ]
-    resources = ["arn:aws:logs:${var.region}:${local.acct}:log-group:/aws/lambda/on-dig-net-resolver*", "arn:aws:logs:${var.region}:${local.acct}:log-group:/aws/apigw/on-dig-net-resolver*"]
+    resources = [
+      "arn:aws:logs:${var.region}:${local.acct}:log-group:/aws/lambda/on-dig-net-resolver*",
+      "arn:aws:logs:${var.region}:${local.acct}:log-group:/aws/apigw/on-dig-net-resolver*",
+      "arn:aws:logs:${var.region}:${local.acct}:log-group:/aws/lambda/on-dig-net-watcher*",
+    ]
   }
   statement {
     sid       = "Route53"

@@ -31,10 +31,11 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - run: cargo fmt --all --check
-      # Lint the pure lib (+ its tests) and the AWS Lambda binary (the bin is feature-gated behind
-      # `aws`, so it is skipped without the feature — lint it explicitly).
+      # Lint the pure lib (+ its tests) and the AWS Lambda binaries (both bins are feature-gated
+      # behind `aws`, so they are skipped without the feature — lint each explicitly).
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --bin bootstrap --features aws -- -D warnings
+      - run: cargo clippy --bin watcher --features aws -- -D warnings
       - run: cargo test --all-targets
 
   js:
