@@ -37,6 +37,20 @@ jobs:
       - run: cargo clippy --bin bootstrap --features aws -- -D warnings
       - run: cargo test --all-targets
 
+  js:
+    name: js test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      # No package.json / dependencies: the sw.js orchestration logic (range planner, parallel
+      # fan-out, cache-key builders, decrypt-stream assembly, §205d/§205e) is tested with Node's
+      # built-in test runner + a small in-repo crypto stub (test/stub-dig-client.mjs) — no browser,
+      # no wasm build needed. See test/load-sw.mjs for how assets/sw.js is loaded under Node.
+      - run: node --test test/sw.test.mjs
+
   audit:
     name: cargo-deny
     runs-on: ubuntu-latest

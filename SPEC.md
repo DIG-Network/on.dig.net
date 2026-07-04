@@ -151,3 +151,48 @@ The loader / service-worker / wire behavior and the `.dig` read path are FIXED c
 docs.dig.net + digstore SPEC). This service is a pure relocation of the resolver: it MUST keep the
 loader HTML, `sw.js`, `dig-embed.js`, and the read-crypto WASM byte-identical to the shipped
 artifacts, and MUST keep serving every previously-served route identically.
+
+This fixes the EXTERNAL contract — routes, status codes, response headers, the `.dig` read/verify
+semantics — not `sw.js`'s internal fetch/decrypt/caching strategy, which MAY evolve (§9) as long as
+every route keeps serving identically and no security invariant is weakened.
+
+## 9. Loader performance: parallel range fetch, streaming decrypt, persistent caching
+
+`sw.js` fetches, verifies, and decrypts a resource as follows (the network/decrypt/caching
+STRATEGY; the wire formats it talks — the RPC envelope, the GET content-path headers, the AEAD
+chunking, the merkle inclusion proof — are unchanged and specified elsewhere, §3, §6, docs.dig.net,
+digstore `SPEC.md`):
+
+- **Parallel byte-range fan-out.** A resource is fetched in fixed-size windows (1 MiB over the
+  cacheable GET content path §3/§7's edge behavior for `/stores/*/content/*`; 3 MiB over the POST
+  JSON-RPC fallback). Window 0 is always fetched alone — it is the only way to learn the resource's
+  total length. Every remaining window is independent (a plain byte-range read, not an opaque
+  pagination cursor), so once the total is known they are fetched CONCURRENTLY, bounded to at most
+  6 in flight at once. This does not change verification: the merkle inclusion proof is still
+  checked over the fully-reassembled ciphertext exactly as before (its leaf is a hash of the WHOLE
+  resource, so it cannot itself be verified incrementally) — only the round-trips leading up to
+  that check are now concurrent instead of sequential.
+- **Streaming decrypt.** Once the ciphertext is fetched and merkle-verified, chunk 0 (per the AEAD
+  chunk boundaries carried in `X-Dig-Chunk-Lens` / `chunk_lens`) is decrypted EAGERLY, before any
+  `Response` is constructed — a decrypt failure here (wrong key / decoy resource) still yields a
+  clean `404`, identical to the pre-streaming behavior, because the derived AES key is the same for
+  every chunk in a resource: a wrong key fails AEAD authentication on every chunk, so testing chunk
+  0 fully covers that case. The `Response` body is then a stream that has already enqueued chunk 0
+  and decrypts chunks 1..N LAZILY as the stream is read, so the browser can start consuming a large
+  multi-chunk resource before the last chunk is decrypted. Every chunk is still decrypted through
+  its own AEAD-authenticated call — no chunk's authentication is skipped.
+- **Persisted WASM module.** The dig-client WASM (hash-verified against the pinned SHA-256 exactly
+  as before) is stored in the Cache API keyed by that SHA-256 once fetched. A cache hit is reused
+  directly (not re-hashed — Cache Storage is same-origin, SW-private storage this worker's own code
+  is the only writer of) and passed to the streaming-instantiate path, letting the browser reuse its
+  compiled-code cache tied to that Cache Storage entry and skip recompilation. A wasm rebuild (new
+  SHA-256) naturally misses the old entry.
+- **Persisted decrypted content.** A decrypted resource read under a PINNED (concrete 64-hex) root
+  is persisted in the Cache API, keyed by store id + root + resource key, so a later load — even a
+  fresh service-worker instance or a new browser session — skips the network fetch and decrypt
+  entirely. An unpinned ("latest"/mutable) read is NEVER persisted this way: since "latest" can
+  legitimately resolve to different content over time, a persisted entry for it could serve stale
+  content forever after the underlying value changes — exactly what the chain-anchored-root pin
+  model exists to prevent. Persistence is best-effort (a private-mode/quota failure never blocks
+  serving content already handed to the page) and happens AFTER the response has already been sent
+  (via `event.waitUntil`), so it never delays the visible response.

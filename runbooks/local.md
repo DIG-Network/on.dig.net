@@ -15,6 +15,7 @@ cargo clippy --bin bootstrap --features aws -- -D warnings  # the Lambda binary
 cargo fmt --all --check
 terraform -chdir=infra fmt -check -recursive
 terraform -chdir=infra init -backend=false && terraform -chdir=infra validate
+node --test test/sw.test.mjs                                # sw.js orchestration logic (Node 18+, no deps/build needed)
 ```
 
 ## Run the Lambda handler locally
@@ -40,3 +41,8 @@ local handler too.
   build step fetches them. See `runbooks/deploy.md` for how to update them.
 - There is no web front end in this repo; the "UI" is the served `loader.html` + the decrypted store
   content rendered client-side.
+- `sw.js`'s non-crypto orchestration logic (byte-range planning, parallel fan-out, Cache API key
+  building, streaming-decrypt assembly — SPEC.md §9) is unit-tested under plain Node in `test/`; see
+  `test/load-sw.mjs` for how `assets/sw.js` is loaded outside a browser (a small crypto stub
+  substitutes for the real dig-client wasm — real AEAD/merkle correctness is covered by digstore's
+  `dig-client-wasm` Rust suite, not re-tested here).
