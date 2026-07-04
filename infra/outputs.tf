@@ -22,6 +22,16 @@ output "lambda_function_name" {
   value = aws_lambda_function.resolver.function_name
 }
 
+output "watcher_function_name" {
+  description = "The chain-change watcher Lambda (#33)."
+  value       = aws_lambda_function.watcher.function_name
+}
+
+output "watcher_state_table" {
+  description = "This service's OWN last-known-tip ledger table (never the shared dighub table)."
+  value       = aws_dynamodb_table.watcher_state.name
+}
+
 output "ci_deploy_role_arn" {
   description = "Set the repo variable CI_DEPLOY_ROLE_ARN to this."
   value       = aws_iam_role.deploy.arn

@@ -119,3 +119,17 @@ variable "lambda_source_code_hash" {
   type        = string
   default     = ""
 }
+
+# Same pattern as lambda_package_path/lambda_source_code_hash, for the chain-change watcher
+# Lambda (#33, `watcher.tf`) built from the same crate's `watcher` binary target.
+variable "watcher_lambda_package_path" {
+  description = "Path to the built cargo-lambda watcher bootstrap.zip."
+  type        = string
+  default     = ""
+}
+
+variable "watcher_lambda_source_code_hash" {
+  description = "Base64 sha256 of the watcher zip (computed in CI)."
+  type        = string
+  default     = ""
+}

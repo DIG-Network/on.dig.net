@@ -51,6 +51,15 @@ jobs:
           test -f "$zip" || { echo "::error::bootstrap.zip not produced"; exit 1; }
           echo "zip=$zip" >> "$GITHUB_OUTPUT"
           echo "hash=$(openssl dgst -sha256 -binary "$zip" | openssl base64 -A)" >> "$GITHUB_OUTPUT"
+      - name: build chain-change watcher lambda zip (arm64, #33)
+        id: build_watcher
+        run: |
+          set -euo pipefail
+          cargo lambda build --release --arm64 --features aws --bin watcher --output-format zip
+          zip="$PWD/target/lambda/watcher/bootstrap.zip"
+          test -f "$zip" || { echo "::error::watcher bootstrap.zip not produced"; exit 1; }
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "hash=$(openssl dgst -sha256 -binary "$zip" | openssl base64 -A)" >> "$GITHUB_OUTPUT"
       - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           role-to-assume: ${{ vars.CI_DEPLOY_ROLE_ARN }}
@@ -63,7 +72,9 @@ jobs:
         run: |
           terraform -chdir=infra apply -auto-approve -no-color \
             -var "lambda_package_path=${{ steps.build.outputs.zip }}" \
-            -var "lambda_source_code_hash=${{ steps.build.outputs.hash }}"
+            -var "lambda_source_code_hash=${{ steps.build.outputs.hash }}" \
+            -var "watcher_lambda_package_path=${{ steps.build_watcher.outputs.zip }}" \
+            -var "watcher_lambda_source_code_hash=${{ steps.build_watcher.outputs.hash }}"
       # Invalidate the static asset paths so a changed stable-path byte is served immediately.
       - name: invalidate changed asset paths
         run: |

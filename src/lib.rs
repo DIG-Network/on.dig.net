@@ -3,6 +3,7 @@
 //! wire-faithful copy of the hub's `dighub-data::domain`) and are re-exported here.
 
 pub mod domain;
+pub mod watcher;
 
 pub use crate::domain::{validate_label, RESERVED_WORDS};
 use crate::domain::{Domain, DomainStatus};
