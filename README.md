@@ -16,6 +16,7 @@ the resolver's assets — the outage this split eliminates.)
 - `src/domain.rs` — the read-only DynamoDB record contract (a wire-faithful subset of hub's `dighub-data::domain`).
 - `src/bin/bootstrap.rs` — the AWS Lambda entrypoint (`--features aws`).
 - `assets/` — the served artifacts, committed: `loader.html`, `sw.js`, `dig-embed.js`, the dig-client WASM (`dig_client.js` + `dig_client_bg.wasm`), and the status pages (`pages/*.html`).
+- `test/` — Node-native unit tests (`node --test`) for `sw.js`'s non-crypto orchestration logic (byte-range planning, parallel fan-out, Cache API persistence, streaming-decrypt assembly).
 - `infra/` — the standalone terraform stack (Lambda + API Gateway + CloudFront + the dedicated S3 asset bucket + Route53 + the CI OIDC role).
 - `publish-assets.sh` — uploads the static loader assets to the dedicated S3 bucket.
 - `SPEC.md` — the normative contract. `runbooks/` — deploy + local-run procedures. `llms.txt` — machine map.
@@ -38,6 +39,7 @@ cargo test --all-targets                              # pure lib + asset-regress
 cargo clippy --all-targets -- -D warnings
 cargo clippy --bin bootstrap --features aws -- -D warnings
 cargo lambda build --release --arm64 --features aws --bin bootstrap --output-format zip
+node --test test/sw.test.mjs                          # sw.js orchestration logic (Node 18+)
 ```
 
 The read-crypto WASM in `assets/` is a vendored copy of the shipped `dig-client-wasm` artifact.

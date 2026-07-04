@@ -17,6 +17,22 @@
 //
 // Mirrors the read flow in apps/web/lib/dig-client.js (fetchVerifiedCiphertext +
 // decryptResourceChunks) and the dig-browser-extension service worker model.
+//
+// #205d/#205e (PERFORMANCE, this file only — see SPEC.md §9):
+//   - Network fetch fans the per-window byte-range GETs out in PARALLEL (bounded,
+//     `MAX_PARALLEL_RANGES`) instead of one-at-a-time, once the first window has told us the
+//     resource's total length. The resource-level merkle inclusion proof still requires the
+//     FULL ciphertext (its leaf is a hash of the whole resource), so verification itself is
+//     unchanged — only the network round-trips leading up to it are parallelized.
+//   - Decrypt output is STREAMED to the Response body: chunk 0 is decrypted eagerly (before any
+//     Response exists, preserving the exact prior fail-closed "wrong key/decoy → 404" behavior),
+//     then chunks 1..N are decrypted lazily as the stream is pulled, so the browser can start
+//     consuming a large multi-chunk resource before the last chunk is decrypted. Every chunk
+//     still goes through its own AEAD-authenticated decryptChunk() call — nothing is skipped.
+//   - The compiled WASM module + decrypted PINNED-resource output are persisted in the Cache
+//     API so a repeat load skips the wasm re-fetch/recompile and the RPC round-trip + decrypt.
+//     Only PINNED (concrete-root) reads are persisted — an unpinned "latest" read is mutable, so
+//     persisting it could serve stale content after the underlying value changes.
 
 // ---- WASM glue import (ES module worker only) --------------------------------
 // The init function and named crypto exports.  The paths are same-origin because
@@ -62,12 +78,28 @@ const HDR_CHUNK_LENS = "x-dig-chunk-lens";
 const HDR_PROGRAM_HASH = "x-dig-program-hash";
 const HDR_TOTAL_LENGTH = "x-dig-total-length";
 
+// #205d — how many byte-range windows to fetch concurrently once the total length is known (the
+// first window must always be fetched alone since it is what TELLS us the total). Bounded so a
+// huge resource can't open unbounded concurrent connections; comfortably under both browsers'
+// per-origin HTTP/1.1 limits and typical HTTP/2 stream caps, while still collapsing an N-window
+// resource from N sequential RTTs to ~N/MAX_PARALLEL_RANGES.
+const MAX_PARALLEL_RANGES = 6;
+
+// #205e — Cache Storage names for the persisted WASM module + persisted decrypted PINNED content.
+// Versioned suffixes so a future incompatible change to what's stored can start a fresh cache
+// without needing manual migration/cleanup logic.
+const WASM_CACHE_NAME = "dig-wasm-v1";
+const CONTENT_CACHE_NAME = "dig-content-v1";
+// Soft cap on the number of persisted decrypted-content entries; oldest-first eviction on overflow
+// (mirrors the in-memory CACHE_MAX policy below) so a long-lived origin can't grow this unbounded.
+const CONTENT_CACHE_MAX = 200;
+
 // Store-sandbox CSP for the DECRYPTED DOCUMENTS this SW synthesizes (#202, #175 root cause).
 //
-// WHY the SW must set this itself: an SW-synthesized Response never receives the edge CSP. The store
-// document a visitor sees is built here by serveUrn(); without this header the decrypted document
-// would run with NO CSP at all — the per-subdomain sandbox would be ABSENT. This constant IS that
-// sandbox.
+// WHY the SW must set this itself: an SW-synthesized Response never receives the edge CSP. The
+// store document a visitor sees is built here by serveUrn(); without this header the decrypted
+// document would run with NO CSP at all — the per-subdomain sandbox would be ABSENT. This constant
+// IS that sandbox.
 //
 // TWO DISTINCT TRUST CONTEXTS (#206): this STORE-CONTENT sandbox is DELIBERATELY DIFFERENT from the
 // LOADER-SHELL CSP. The loader shell (loader.html — first-party inline branding + bootstrap + the
@@ -176,6 +208,72 @@ function cfgFromRegistration() {
 }
 
 /**
+ * Build the Cache Storage key for the verified dig-client WASM artifact. Content-addressed by the
+ * expected SHA-256 (query param, not a real endpoint param — this Request is only ever used as a
+ * caches.match()/put() key, never actually fetched): a wasm rebuild changes
+ * DIG_CLIENT_WASM_SHA256, which naturally MISSES the old entry rather than ever risking a stale or
+ * mismatched artifact being served from the persisted cache.
+ *
+ * Resolved against `self.location` explicitly (rather than a bare relative string) — a real
+ * Service Worker's `Request`/`fetch` resolve a relative path against the worker's own script URL
+ * automatically, but that implicit base does not exist in every JS host (e.g. plain Node, used by
+ * this repo's unit tests), so an absolute URL keeps this key construction environment-independent.
+ */
+function wasmCacheKey(hash) {
+  return new Request(new URL("/__dig/dig_client_bg.wasm?sha256=" + hash, self.location.href));
+}
+
+/**
+ * Fetch (or reuse from the Cache API) the verified dig-client WASM as a Response, ready to hand to
+ * `initDigClient({ module_or_path: … })`.
+ *
+ * #205e: on a cache hit, the Response comes from `caches.match()` — passing THAT into
+ * `WebAssembly.instantiateStreaming` (which is what the wasm-bindgen glue's `__wbg_load` does for
+ * any `Response` input) lets the browser reuse the compiled-code cache it automatically associates
+ * with a Cache Storage entry, skipping recompilation entirely on this and every subsequent load
+ * until the pinned SHA-256 changes (see https://web.dev/articles/wasm-caching). The hash was
+ * already verified at write-time below; Cache Storage is same-origin, SW-private storage that only
+ * this worker's own code writes to (never network-attacker-controlled), so a cache hit is trusted
+ * without re-hashing — exactly as an already-verified, already-instantiated module in memory would
+ * be trusted for the rest of a session.
+ *
+ * On a miss: fetch, hash-verify (fail closed on mismatch — UNCHANGED invariant), persist the
+ * verified Response for next time (best-effort; a quota/private-mode failure must not block using
+ * the wasm we already verified), and return the original (unconsumed) Response for streaming
+ * instantiation.
+ */
+async function loadDigClientWasmResponse() {
+  let cache = null;
+  try {
+    cache = await caches.open(WASM_CACHE_NAME);
+  } catch {
+    cache = null; // Cache Storage unavailable (private mode / quota) — fetch every time instead.
+  }
+  const key = wasmCacheKey(DIG_CLIENT_WASM_SHA256);
+  if (cache) {
+    const cached = await cache.match(key);
+    if (cached) return cached;
+  }
+
+  const res = await fetch("/__dig/dig_client_bg.wasm");
+  if (!res.ok) throw new Error(`dig-client wasm fetch failed (${res.status})`);
+  const bytes = new Uint8Array(await res.clone().arrayBuffer());
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const hex = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (hex !== DIG_CLIENT_WASM_SHA256) {
+    throw new Error("dig-client wasm integrity check failed — refusing to run unverified crypto");
+  }
+  if (cache) {
+    try {
+      await cache.put(key, res.clone());
+    } catch {
+      // Best-effort persistence only; the already-verified `res` below still works fine.
+    }
+  }
+  return res;
+}
+
+/**
  * Ensure the WASM module is initialised (once) and CFG is loaded.
  * Returns nothing; after awaiting this, the imported named functions are ready.
  */
@@ -192,15 +290,8 @@ async function ensureDig() {
   }
   if (!digReady) {
     digReady = (async () => {
-      const res = await fetch("/__dig/dig_client_bg.wasm");
-      if (!res.ok) throw new Error(`dig-client wasm fetch failed (${res.status})`);
-      const bytes = await res.arrayBuffer();
-      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-      const hex = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
-      if (hex !== DIG_CLIENT_WASM_SHA256) {
-        throw new Error("dig-client wasm integrity check failed — refusing to run unverified crypto");
-      }
-      await initDigClient({ module_or_path: bytes });
+      const res = await loadDigClientWasmResponse();
+      await initDigClient({ module_or_path: res });
       // Install globalThis.digClient for any non-bundler consumers (no-op here
       // since we use named imports, but keeps the contract consistent).
       if (typeof install_global === "function") install_global();
@@ -247,6 +338,39 @@ function parseChunkLensHeader(v) {
 }
 
 /**
+ * Compute the aligned windows (end INCLUSIVE, matching the `range=<start>-<end>` query
+ * convention) covering `[0, total)` in steps of `windowSize`. Pure + side-effect-free so it is
+ * directly unit-testable without a network/browser environment.
+ */
+function planWindows(total, windowSize) {
+  const windows = [];
+  for (let start = 0, index = 0; start < total; start += windowSize, index++) {
+    windows.push({ index, start, end: Math.min(start + windowSize, total) - 1 });
+  }
+  return windows;
+}
+
+/**
+ * Run `worker(item, i)` over `items` with at most `concurrency` in flight at once (a bounded
+ * worker-pool / fan-out). Pure orchestration — no network/crypto dependency — used to fetch
+ * multiple byte-range windows in PARALLEL (#205d) instead of the previous one-at-a-time loop.
+ * Each lane pulls the next unclaimed index itself (plain `next++`, single-threaded JS — no race),
+ * so a slow window never head-of-line-blocks a faster one behind it.
+ */
+async function runParallel(items, worker, concurrency) {
+  let next = 0;
+  const lanes = Math.max(1, Math.min(concurrency, items.length));
+  async function lane() {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: lanes }, lane));
+}
+
+/**
  * Fetch the full ciphertext for a PINNED resource over the CACHEABLE GET content path (#205a),
  * reassembling aligned 1-MiB windows the CloudFront edge caches for a year. Reads the verification
  * metadata from response HEADERS (inclusion proof / chunk lens / program hash / total length) —
@@ -256,6 +380,12 @@ function parseChunkLensHeader(v) {
  * The GET URL: `<rpcOrigin>/stores/<storeId>/content/<rk>?root=<root>&range=<start>-<end>`. Windows
  * are 1-MiB, aligned to the window size so every PoP request is a shared cache key (the Lambda snaps
  * ranges to 64-KiB blocks; 1 MiB is a multiple, so no fragmentation).
+ *
+ * #205d: window 0 is fetched alone (it is the only way to learn the resource's total length); every
+ * remaining window is independent and edge-cacheable, so once the total is known they are fanned out
+ * in PARALLEL (bounded, `MAX_PARALLEL_RANGES`) rather than awaited one at a time. This does not touch
+ * verification — the caller still checks the merkle inclusion proof over the fully-reassembled
+ * ciphertext exactly as before; only the round-trips leading up to that are now concurrent.
  */
 async function fetchVerifiedGet(storeId, rk, root) {
   // The content edge is the SAME origin as the JSON-RPC endpoint (rpc.dig.net) — reuse CFG.rpc.
@@ -263,34 +393,31 @@ async function fetchVerifiedGet(storeId, rk, root) {
   const contentUrl = (start, end) =>
     `${base}/stores/${storeId}/content/${rk}?root=${root}&range=${start}-${end}`;
 
-  let total = null;
-  let buf = null;
-  let proof = "";
-  let chunkLens = null;
-  let offset = 0;
+  // `cache: "force-cache"` leans on the browser HTTP cache + the CloudFront edge cache (the
+  // response is 1-year immutable), so a repeat/same-session read is local and a warm PoP is fast.
+  const first = await fetch(contentUrl(0, GET_WINDOW - 1), { cache: "force-cache" });
+  if (!first.ok) throw new Error("dig content GET failed (" + first.status + ")");
+  const total = parseInt(first.headers.get(HDR_TOTAL_LENGTH) || "", 10);
+  if (!Number.isFinite(total)) throw new Error("content GET missing total length");
+  const proof = first.headers.get(HDR_INCLUSION_PROOF) || "";
+  const chunkLens = parseChunkLensHeader(first.headers.get(HDR_CHUNK_LENS));
 
-  for (;;) {
-    const end = offset + GET_WINDOW - 1;
-    // `cache: "force-cache"` leans on the browser HTTP cache + the CloudFront edge cache (the
-    // response is 1-year immutable), so a repeat/same-session read is local and a warm PoP is fast.
-    const res = await fetch(contentUrl(offset, end), { cache: "force-cache" });
-    if (!res.ok) throw new Error("dig content GET failed (" + res.status + ")");
-    if (total === null) {
-      const t = parseInt(res.headers.get(HDR_TOTAL_LENGTH) || "", 10);
-      if (!Number.isFinite(t)) throw new Error("content GET missing total length");
-      total = t >>> 0;
-      buf = new Uint8Array(total);
-      const p = res.headers.get(HDR_INCLUSION_PROOF);
-      if (p) proof = p;
-      chunkLens = parseChunkLensHeader(res.headers.get(HDR_CHUNK_LENS));
-    }
-    const chunk = new Uint8Array(await res.arrayBuffer());
-    buf.set(chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - offset))), offset);
-    offset += chunk.length;
-    // A short (or empty) window that reaches the total completes the resource. Guard against a
-    // zero-length window (would loop forever) by breaking when we've covered `total` or got nothing.
-    if (offset >= total || chunk.length === 0) break;
-  }
+  const buf = new Uint8Array(total >>> 0);
+  const firstBytes = new Uint8Array(await first.arrayBuffer());
+  buf.set(firstBytes.subarray(0, Math.min(firstBytes.length, buf.length)), 0);
+
+  const remaining = planWindows(buf.length, GET_WINDOW).filter((w) => w.index > 0);
+  await runParallel(
+    remaining,
+    async (w) => {
+      const res = await fetch(contentUrl(w.start, w.end), { cache: "force-cache" });
+      if (!res.ok) throw new Error("dig content GET failed (" + res.status + ")");
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      buf.set(bytes.subarray(0, Math.max(0, Math.min(bytes.length, buf.length - w.start))), w.start);
+    },
+    MAX_PARALLEL_RANGES
+  );
+
   return { ciphertext: buf, proof, chunkLens };
 }
 
@@ -316,62 +443,64 @@ async function fetchVerified(storeId, rk, root) {
   return fetchVerifiedPost(storeId, rk, root);
 }
 
-/** The POST JSON-RPC ciphertext fetch: 3-MiB windows looped until `complete`. The always-available
- *  fallback + the path for rootless / "latest" (mutable, uncacheable) reads. */
+/**
+ * The POST JSON-RPC ciphertext fetch: 3-MiB windows, the always-available fallback + the path for
+ * rootless / "latest" (mutable, uncacheable) reads.
+ *
+ * #205d: exactly like the GET path, window 0 (`offset=0`) is awaited alone to learn the resource's
+ * `total_length`; every remaining `offset` is then planned up front and fanned out in PARALLEL
+ * (bounded, `MAX_PARALLEL_RANGES`) instead of following the server's `next_offset` one response at a
+ * time. This is safe because `dig.getContent` is a plain byte-range read (arbitrary `offset,length`
+ * params, not an opaque pagination cursor) — the GET path above already assumes exactly this same
+ * fixed-stride-windows contract with no cursor at all.
+ */
 async function fetchVerifiedPost(storeId, rk, root) {
-  let offset = 0;
-  let total = null;
-  let buf = null;
-  let proof = "";
-  let chunkLens = null;
+  const first = await rpcCall("dig.getContent", {
+    store_id: storeId,
+    root,
+    retrieval_key: rk,
+    offset: 0,
+    length: RPC_CHUNK,
+  });
+  if (!first) throw new Error("dig RPC returned no data");
+  const total = first.total_length >>> 0;
+  const buf = new Uint8Array(total);
+  let proof = first.inclusion_proof || "";
+  const chunkLens = Array.isArray(first.chunk_lens) ? first.chunk_lens.map((n) => n >>> 0) : null;
 
-  for (;;) {
-    const r = await rpcCall("dig.getContent", {
-      store_id: storeId,
-      root,
-      retrieval_key: rk,
-      offset,
-      length: RPC_CHUNK,
-    });
-    if (!r) throw new Error("dig RPC returned no data");
-    if (total === null) {
-      total = r.total_length >>> 0;
-      buf = new Uint8Array(total);
-    }
-    if (chunkLens === null && Array.isArray(r.chunk_lens)) {
-      chunkLens = r.chunk_lens.map((n) => n >>> 0);
-    }
-    const chunk = b64ToBytes(r.ciphertext || "");
-    const at = r.offset >>> 0;
-    buf.set(chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - at))), at);
-    if (r.inclusion_proof) proof = r.inclusion_proof;
-    if (r.complete || r.next_offset == null) break;
-    offset = r.next_offset >>> 0;
+  const firstBytes = b64ToBytes(first.ciphertext || "");
+  const at0 = first.offset >>> 0;
+  buf.set(firstBytes.subarray(0, Math.max(0, Math.min(firstBytes.length, total - at0))), at0);
+
+  if (!(first.complete || first.next_offset == null)) {
+    const remaining = planWindows(total, RPC_CHUNK).filter((w) => w.index > 0);
+    await runParallel(
+      remaining,
+      async (w) => {
+        const r = await rpcCall("dig.getContent", {
+          store_id: storeId,
+          root,
+          retrieval_key: rk,
+          offset: w.start,
+          length: RPC_CHUNK,
+        });
+        if (!r) throw new Error("dig RPC returned no data");
+        const chunk = b64ToBytes(r.ciphertext || "");
+        const at = r.offset >>> 0;
+        buf.set(chunk.subarray(0, Math.max(0, Math.min(chunk.length, total - at))), at);
+        if (r.inclusion_proof && !proof) proof = r.inclusion_proof;
+      },
+      MAX_PARALLEL_RANGES
+    );
   }
+
   return { ciphertext: buf, proof, chunkLens };
 }
 
-/**
- * Decrypt multi-chunk ciphertext.  Mirrors decryptResourceChunks() in
- * apps/web/lib/dig-client.js.  `chunkLens` are the per-chunk CIPHERTEXT byte
- * lengths (may be null/empty for a single-chunk resource).
- */
-function decryptChunks(keyHex, ciphertext, chunkLens) {
-  const lens = chunkLens && chunkLens.length ? chunkLens : [ciphertext.length];
-  if (lens.length === 1) return decryptChunk(keyHex, ciphertext); // fast path
-  // Sanity-check: chunk lengths must sum to the full ciphertext length (defense in depth;
-  // a mismatch would otherwise only surface as a GCM tag failure).
-  const lensSum = lens.reduce((a, n) => a + n, 0);
-  if (lensSum !== ciphertext.length) {
-    throw new Error("served ciphertext length does not match chunk lengths");
-  }
-  const parts = [];
-  let p = 0;
-  for (const len of lens) {
-    parts.push(decryptChunk(keyHex, ciphertext.subarray(p, p + len)));
-    p += len;
-  }
-  const total = parts.reduce((a, x) => a + x.length, 0);
+/** Concatenate decrypted parts into one Uint8Array (the full-resource plaintext). */
+function concatParts(parts) {
+  if (parts.length === 1) return parts[0];
+  const total = parts.reduce((a, p) => a + p.length, 0);
   const out = new Uint8Array(total);
   let q = 0;
   for (const part of parts) {
@@ -379,6 +508,76 @@ function decryptChunks(keyHex, ciphertext, chunkLens) {
     q += part.length;
   }
   return out;
+}
+
+/**
+ * Build a streamed Response body for an already-verified, already-key-derived resource (#205d
+ * "streaming decrypt"). `firstChunk` MUST already be the caller's own `decryptChunk()` result for
+ * `lens[0]` — see the fail-closed reasoning below. Returns `{ stream, whenDone }`:
+ *   - `stream` is handed straight to `new Response(stream, …)`; chunk 0 is enqueued immediately,
+ *     and chunks 1..N are decrypted LAZILY as the stream is pulled, so a large multi-chunk resource
+ *     starts flowing to the browser before the LAST chunk has been decrypted.
+ *   - `whenDone` resolves with the full reassembled plaintext once every chunk has been decrypted
+ *     (used to populate the in-memory + persistent caches, #205e) — or rejects if a later chunk's
+ *     AEAD tag fails (see below).
+ *
+ * SECURITY — nothing here changes WHAT is verified, only WHEN the decrypt compute happens:
+ *   - The resource-level merkle inclusion proof (verifyInclusion) is checked over the FULL
+ *     ciphertext by the caller BEFORE this function is ever invoked. Its leaf is a hash of the
+ *     whole resource, so it fundamentally cannot be verified incrementally — it already gates
+ *     everything below, unchanged.
+ *   - Every chunk is still decrypted through decryptChunk(), which still authenticates that
+ *     specific chunk's AEAD tag — no chunk's authentication is skipped or weakened.
+ *   - `firstChunk` decrypting successfully is not a shortcut: the derived AES key is the SAME for
+ *     every chunk in a resource (one key per resource, not per chunk), and the ciphertext is
+ *     already proven bit-identical to the chain-anchored resource by the merkle check above — so a
+ *     wrong-key/decoy resource fails AEAD authentication on EVERY chunk, and a correct-key resource
+ *     succeeds on every chunk. Testing chunk 0 therefore fully covers the "wrong key / decoy" case
+ *     the pre-streaming code caught by decrypting the whole resource up front, and it does so
+ *     BEFORE any Response/status code is committed — preserving the exact prior blind-model
+ *     behavior (a decoy still yields a clean 404, never a mid-stream error visible to the page).
+ *     A later-chunk failure is therefore unreachable via adversarial input; if it ever occurred
+ *     (e.g. an internal fault) the stream errors rather than silently truncating.
+ */
+function buildDecryptStream(keyHex, ciphertext, lens, firstChunk) {
+  const parts = [firstChunk];
+  let offset = lens[0];
+  let i = 1;
+  let resolveDone;
+  let rejectDone;
+  const whenDone = new Promise((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(firstChunk);
+      if (i >= lens.length) {
+        controller.close();
+        resolveDone(concatParts(parts));
+      }
+    },
+    pull(controller) {
+      if (i >= lens.length) {
+        controller.close();
+        resolveDone(concatParts(parts));
+        return;
+      }
+      try {
+        const len = lens[i++];
+        const plain = decryptChunk(keyHex, ciphertext.subarray(offset, offset + len));
+        offset += len;
+        parts.push(plain);
+        controller.enqueue(plain);
+      } catch (e) {
+        controller.error(e);
+        rejectDone(e);
+      }
+    },
+  });
+
+  return { stream, whenDone };
 }
 
 /**
@@ -436,13 +635,74 @@ function urnForPath(path) {
 // ---- In-memory cache ---------------------------------------------------------
 // Keyed by "<storeId>:<root>/<resourceKey>" — caches decrypted bytes only.
 // Bounded to 100 entries (evict oldest first) so it can't grow unbounded across a long session.
+// This is ephemeral (lost on SW restart) — the persistent Cache API layer below (#205e) is what
+// survives a restart/new session for PINNED reads.
 const CACHE = new Map();
 const CACHE_MAX = 100;
+
+/** Remember decrypted bytes in the ephemeral in-memory cache, evicting the oldest entry if full. */
+function rememberInMemory(cacheKey, bytes) {
+  if (CACHE.size >= CACHE_MAX) CACHE.delete(CACHE.keys().next().value);
+  CACHE.set(cacheKey, bytes);
+}
+
+/**
+ * Build the persistent Cache Storage key for a decrypted PINNED resource. Same-origin synthetic
+ * path (never actually fetched — only ever used as a caches.match()/put() key) so the entry is
+ * unambiguously scoped per store + root + resource key; a different pinned root is a different
+ * key, so a persisted entry can never accidentally answer for a different generation.
+ */
+function contentCacheKey(storeId, root, resourceKey) {
+  return new Request(
+    self.location.origin + "/__dig_content_cache/" + storeId + "/" + root + "/" + encodeURIComponent(resourceKey)
+  );
+}
+
+/**
+ * Look up a decrypted PINNED resource in the persistent Cache API. Returns the cached bytes, or
+ * null on a miss (or when Cache Storage itself is unavailable — private mode / quota — in which
+ * case the caller falls through to the network path exactly as before this feature existed).
+ */
+async function matchContentCache(storeId, root, resourceKey) {
+  try {
+    const cache = await caches.open(CONTENT_CACHE_NAME);
+    const hit = await cache.match(contentCacheKey(storeId, root, resourceKey));
+    if (!hit) return null;
+    return new Uint8Array(await hit.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a decrypted PINNED resource's plaintext into the Cache API (#205e), so the next load —
+ * even a fresh SW instance / new browser session — skips the RPC round-trip + decrypt entirely.
+ * NEVER called for an unpinned ("latest") read — see rootIsPinned() and the module doc comment:
+ * persisting a mutable read could serve stale content forever after the underlying value changes,
+ * which the chain-anchored-root pin model exists specifically to prevent. Best-effort: a
+ * quota/private-mode failure must never break serving content that was already sent to the page.
+ */
+async function putContentCache(storeId, root, resourceKey, bytes, headers) {
+  try {
+    const cache = await caches.open(CONTENT_CACHE_NAME);
+    await cache.put(contentCacheKey(storeId, root, resourceKey), new Response(bytes, { status: 200, headers }));
+    const keys = await cache.keys();
+    if (keys.length > CONTENT_CACHE_MAX) {
+      await Promise.all(keys.slice(0, keys.length - CONTENT_CACHE_MAX).map((k) => cache.delete(k)));
+    }
+  } catch {
+    // Best-effort persistence only.
+  }
+}
 
 /**
  * Serve a resource: fetch from RPC, verify, decrypt, return Response.
  * `path` is the URL path (for pinned-domain requests).
  * `digUrl` is the raw chia:// or urn: string (overrides path when present).
+ *
+ * Returns `{ response, persistPromise }`. `persistPromise`, when present, is the background
+ * persistent-cache write (#205e) — the caller MUST pass it to `event.waitUntil()` so the SW isn't
+ * torn down before the write completes; it never blocks/delays `response` itself.
  */
 async function serveUrn(path, digUrl) {
   await ensureDig();
@@ -450,7 +710,7 @@ async function serveUrn(path, digUrl) {
   let storeId, root, resourceKey, salt;
   if (digUrl) {
     const p = parseDigUrn(digUrl);
-    if (!p) return new Response("Invalid DIG URN", { status: 400 });
+    if (!p) return { response: new Response("Invalid DIG URN", { status: 400 }) };
     ({ storeId, root, resourceKey, salt } = p);
     root = root || CFG.root || "latest";
     salt = salt || CFG.salt || null;
@@ -459,11 +719,21 @@ async function serveUrn(path, digUrl) {
   }
 
   const cacheKey = storeId + ":" + root + "/" + resourceKey;
-  if (CACHE.has(cacheKey)) {
-    return new Response(CACHE.get(cacheKey), {
-      status: 200,
-      headers: resourceHeaders(resourceKey, { "x-dig-cache": "hit" }),
-    });
+  const memHit = CACHE.get(cacheKey);
+  if (memHit) {
+    return { response: new Response(memHit, { status: 200, headers: resourceHeaders(resourceKey, { "x-dig-cache": "memory" }) }) };
+  }
+
+  const pinned = rootIsPinned(root);
+
+  // #205e — a persistent-cache hit skips the network + decrypt entirely. Pinned reads only (see
+  // putContentCache doc comment); an unpinned "latest" read always goes to the network below.
+  if (pinned) {
+    const persisted = await matchContentCache(storeId, root, resourceKey);
+    if (persisted) {
+      rememberInMemory(cacheKey, persisted);
+      return { response: new Response(persisted, { status: 200, headers: resourceHeaders(resourceKey, { "x-dig-cache": "persistent" }) }) };
+    }
   }
 
   // Retrieval key = SHA-256(canonical rootless URN), hex.
@@ -481,25 +751,41 @@ async function serveUrn(path, digUrl) {
   // Derive the per-resource AES-256 key.
   const keyHex = deriveKey(storeId, resourceKey, salt || null);
 
-  // Decrypt.  A tag failure (decoy / wrong key) returns 404.
-  let bytes;
-  try {
-    bytes = decryptChunks(keyHex, ciphertext, chunkLens);
-  } catch {
-    // Decoy or wrong key — treat as not found (blind model).
-    return new Response("Not found", { status: 404 });
+  const lens = chunkLens && chunkLens.length ? chunkLens : [ciphertext.length];
+  const lensSum = lens.reduce((a, n) => a + n, 0);
+  if (lensSum !== ciphertext.length) {
+    // Sanity-check: chunk lengths must sum to the full ciphertext length (defense in depth;
+    // a mismatch would otherwise only surface as a GCM tag failure).
+    return { response: new Response("Not found", { status: 404 }) };
   }
 
-  if (CACHE.size >= CACHE_MAX) CACHE.delete(CACHE.keys().next().value); // evict oldest
-  CACHE.set(cacheKey, bytes);
+  // Decrypt chunk 0 eagerly — the fail-closed gate (see buildDecryptStream doc comment). A tag
+  // failure (decoy / wrong key) returns 404, exactly as the pre-streaming code did.
+  let firstChunk;
+  try {
+    firstChunk = decryptChunk(keyHex, ciphertext.subarray(0, lens[0]));
+  } catch {
+    return { response: new Response("Not found", { status: 404 }) };
+  }
 
-  return new Response(bytes, {
+  const { stream, whenDone } = buildDecryptStream(keyHex, ciphertext, lens, firstChunk);
+
+  whenDone.then((bytes) => rememberInMemory(cacheKey, bytes)).catch(() => {});
+
+  let persistPromise = null;
+  if (pinned) {
+    const headers = resourceHeaders(resourceKey, { "x-dig-verified": String(verified) });
+    persistPromise = whenDone
+      .then((bytes) => putContentCache(storeId, root, resourceKey, bytes, headers))
+      .catch(() => {});
+  }
+
+  const response = new Response(stream, {
     status: 200,
-    headers: resourceHeaders(resourceKey, {
-      "x-dig-verified": String(verified),
-      "x-dig-cache": "miss",
-    }),
+    headers: resourceHeaders(resourceKey, { "x-dig-verified": String(verified), "x-dig-cache": "miss" }),
   });
+
+  return { response, persistPromise };
 }
 
 // ---- Fetch interception ------------------------------------------------------
@@ -517,11 +803,34 @@ self.addEventListener("fetch", (event) => {
   // reference — the browser extension model for explicit URN navigation.
   const raw = decodeURIComponent(url.pathname + url.search);
   const digMatch = raw.match(/(?:chia:\/\/|urn:dig:chia:)[^\s"'<>]*/);
-  if (digMatch) {
-    event.respondWith(serveUrn(null, digMatch[0]));
-    return;
-  }
 
-  // Ordinary same-origin path → serve from the pinned store.
-  event.respondWith(serveUrn(url.pathname, null));
+  event.respondWith(
+    (async () => {
+      const { response, persistPromise } = digMatch
+        ? await serveUrn(null, digMatch[0])
+        : await serveUrn(url.pathname, null);
+      // #205e — persist AFTER responding; never delays the bytes already handed to the page.
+      if (persistPromise) event.waitUntil(persistPromise);
+      return response;
+    })()
+  );
 });
+
+// ---- Test-only exports --------------------------------------------------------
+// Additive named exports of the pure/testable helpers (harmless for the SW runtime — a module
+// service worker executes for its side effects; nothing consumes these exports in the browser).
+// Used by test/sw.test.mjs so the range-planner, parallel fan-out, cache-key builders, and
+// decrypt-stream assembly get real unit coverage without needing a browser (see that file for the
+// stubbing strategy for the wasm-bindgen import and the `self`/`caches` globals).
+export {
+  planWindows,
+  runParallel,
+  concatParts,
+  buildDecryptStream,
+  wasmCacheKey,
+  contentCacheKey,
+  rootIsPinned,
+  parseChunkLensHeader,
+  parseDigUrn,
+  contentType,
+};
