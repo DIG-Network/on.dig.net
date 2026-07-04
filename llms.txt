@@ -21,10 +21,19 @@ decrypted store content, rendered in the browser. This file is a machine map of 
 - `GET /__dig/config.json` → `{ "status": "active|available|pending|expired|revoked", … pin … }` (JSON).
 - `GET /__dig/dig_client.js`, `GET /__dig/dig_client_bg.wasm`, `GET /__dig/dig-embed.js`, `GET /__dig_sw.js`, `GET /dig-client/dig_client.js`, `GET /dig-client/dig_client_bg.wasm` → static assets from S3.
 
+## Chain-change watcher (#33)
+A 1-minute EventBridge-scheduled Lambda (`on-dig-net-watcher`) detects when a served store's
+on-chain singleton lineage advances and proactively invalidates the resolver's two dynamic
+CloudFront paths (`/` and `/__dig/config.json`) instead of relying only on their passive
+max-age (300s / 30s). It is strictly read-only on the shared `dighub` table (a `Scan`, never a
+write) and keeps its own last-known-tip state in a dedicated table (`on-dig-net-watcher-state`).
+See `SPEC.md` §10.
+
 ## Source map
-- [SPEC.md](SPEC.md): the normative contract (host resolution, routes, the config.json shape, the Domain wire record, the two CSP trust contexts, the edge contract).
+- [SPEC.md](SPEC.md): the normative contract (host resolution, routes, the config.json shape, the Domain wire record, the two CSP trust contexts, the edge contract, the chain-change watcher).
 - [README.md](README.md): overview + develop/deploy quickstart.
-- [runbooks/deploy.md](runbooks/deploy.md): deploy targets, credentials, the zero-downtime `*.on.dig.net` cutover.
-- [runbooks/local.md](runbooks/local.md): local test/lint/run.
-- `src/lib.rs`: pure resolver logic. `src/domain.rs`: the DynamoDB read contract. `src/bin/bootstrap.rs`: the Lambda.
-- `infra/`: the terraform stack. `assets/`: the served artifacts (committed).
+- [runbooks/deploy.md](runbooks/deploy.md): deploy targets, credentials, the zero-downtime `*.on.dig.net` cutover, verifying the watcher.
+- [runbooks/local.md](runbooks/local.md): local test/lint/run, incl. the watcher.
+- `src/lib.rs`: pure resolver logic. `src/domain.rs`: the DynamoDB read contract. `src/bin/bootstrap.rs`: the resolver Lambda.
+- `src/watcher.rs`: the chain-change watcher's pure decision core. `src/bin/watcher.rs`: the watcher Lambda.
+- `infra/`: the terraform stack (incl. `infra/watcher.tf`). `assets/`: the served artifacts (committed).

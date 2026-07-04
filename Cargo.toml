@@ -1,6 +1,6 @@
 [package]
 name = "on-dig-net-resolver"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.94.1"
 license = "GPL-2.0-only"
@@ -16,8 +16,8 @@ path = "src/lib.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Lambda/AWS deps — only pulled in for the `bootstrap` binary (feature-gated so `cargo test` /
-# `cargo clippy` on the pure lib stay dependency-light and host-buildable).
+# Lambda/AWS deps — only pulled in for the `bootstrap`/`watcher` binaries (feature-gated so
+# `cargo test` / `cargo clippy` on the pure lib stay dependency-light and host-buildable).
 aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 aws-sdk-dynamodb = { version = "1", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"], optional = true }
@@ -25,15 +25,48 @@ lambda_http = { version = "0.13", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 
+# The chain-change watcher (#33) ONLY: a minimal coinset.org HTTP client (no CHIP-0035 decode, no
+# peer connection — see src/watcher.rs module docs for why chia-query/digstore-chain are heavier
+# than this needs) + the CloudFront invalidation + scheduled-Lambda entrypoint deps.
+lambda_runtime = { version = "0.13", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+aws-sdk-cloudfront = { version = "1", optional = true }
+# Just the Chia wire TYPES (Coin + its `coin_id()` naming hash) to compute a child coin's own id
+# from the `{parent_coin_info, puzzle_hash, amount}` triple coinset.org returns — NOT the full
+# chia-wallet-sdk/CLVM stack (no puzzle execution needed for a coin-lineage walk). Same version
+# hub.dig.net's anchor-watcher pins, so the ecosystem resolves one shared version.
+chia-protocol = { version = "0.26", default-features = false, optional = true }
+hex = { version = "0.4", optional = true }
+
 [features]
 default = []
-net = ["dep:lambda_http", "dep:tokio"]
-aws = ["net", "dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tracing", "dep:tracing-subscriber"]
+net = ["dep:lambda_http", "dep:tokio", "dep:reqwest"]
+aws = [
+    "net",
+    "dep:aws-config",
+    "dep:aws-sdk-dynamodb",
+    "dep:aws-sdk-cloudfront",
+    "dep:lambda_runtime",
+    "dep:chia-protocol",
+    "dep:hex",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+]
 
 [[bin]]
 name = "bootstrap"
 path = "src/bin/bootstrap.rs"
 required-features = ["aws", "net"]
+
+[[bin]]
+name = "watcher"
+path = "src/bin/watcher.rs"
+required-features = ["aws", "net"]
+
+[dev-dependencies]
+# Pure-lib async unit tests (src/watcher.rs `run_tick`) — no AWS/net feature needed to compile
+# tests; dev-dependencies are always available under `cargo test`.
+tokio = { version = "1", features = ["macros", "rt"] }
 
 # Mirror the ecosystem Lambda release profile: small, fast-cold-start arm64 zip.
 [profile.release]
