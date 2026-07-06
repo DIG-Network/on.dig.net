@@ -64,8 +64,36 @@ All responses set `x-content-type-options: nosniff`.
 | `GET /dig-client/dig_client.js` | asset bucket | `text/javascript`, immutable |
 | `GET /dig-client/dig_client_bg.wasm` | asset bucket | `application/wasm`, immutable |
 | `GET /__dig/config.json` | Lambda | `application/json`, `max-age=30`, see §4 |
-| `GET /` (and any other path) | Lambda | the STATIC branded loader shell, `text/html`, `max-age=300`, `LOADER_CSP` |
+| `GET /<asset-looking path>` | Lambda | `404`, `text/plain`, `no-store`, `nosniff` (see §3.1) |
+| `GET /` (and any other NAVIGATION path) | Lambda | the STATIC branded loader shell, `text/html`, `max-age=300`, `LOADER_CSP` |
 | unresolvable host | Lambda | `404`, the static error page, `no-store`, static-page CSP |
+
+### 3.1 Asset-looking paths MUST NOT get the loader shell
+
+A request whose FINAL path segment carries a known non-HTML file extension (`js`, `mjs`, `css`,
+`json`, `wasm`, `map`, `svg`, `png`, `jpg`, `jpeg`, `gif`, `webp`, `ico`, `avif`, `woff`, `woff2`,
+`ttf`, `otf`, `txt`, `pdf`, `mp4`, `webm`, `mp3`, `wav`, `ogg`, `xml`, `md`) names a concrete static
+asset. The resolver MUST answer such a path with an honest `404` (`text/plain`, `nosniff`,
+`no-store`), NEVER the branded loader shell. The SPA-fallback loader shell is served ONLY for
+navigation/HTML routes (no extension, or `.html`/`.htm`) — so an SPA client-side deep-link still
+boots the loader, while a request that only *looks* like an SPA route because it contains a dot
+(`/user/john.doe`) also stays a navigation route (only KNOWN asset extensions match).
+
+The load-bearing case is a store's own **`service-worker.js`**: a browser's service-worker
+registration fetch (and an ES-module `import`) BYPASSES the page's controlling loader service worker
+and hits this origin directly. Answering it with the shell's `text/html` made the browser reject the
+registration with `SecurityError: unsupported MIME type ('text/html')` and refuse ES modules. The
+resolver is a blind host — it cannot decrypt an encrypted store asset — so it cannot serve the real
+bytes; a `404` fails the registration cleanly and, because a browser installs a service worker only
+from a 2xx script, does NOT evict the loader SW that serves the store's decrypted content. Assets the
+loader SW *does* serve (every in-store subresource on a controlled page) carry their correct
+extension-derived Content-Type from `sw.js` `contentType()` (`.js`/`.mjs` → `text/javascript`, a
+valid JS MIME).
+
+> A store-provided service worker cannot function on `*.on.dig.net`: the loader service worker
+> already owns scope `/` (it IS the content-decrypting mechanism), and the registration fetch can
+> never reach the encrypted store bytes through this blind origin. Site service workers are therefore
+> unsupported; the resolver returns a clean `404` rather than a mislabeled `text/html` page.
 
 The Lambda bakes every asset in at compile time (so it can serve them for direct/local invocation),
 but in production the `/__dig/*`, `/__dig_sw.js`, and `/dig-client/*` paths are served from the S3
