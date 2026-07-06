@@ -12,7 +12,8 @@
 use lambda_http::{run, service_fn, Body, Error, Request, Response};
 use on_dig_net_resolver::domain::Domain;
 use on_dig_net_resolver::{
-    config_json_for, custom_host_candidate, subdomain_of, LOADER_CSP, STATIC_PAGE_CSP,
+    config_json_for, custom_host_candidate, is_static_asset_path, subdomain_of, LOADER_CSP,
+    STATIC_PAGE_CSP,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -218,6 +219,27 @@ async fn handle(ctx: &Ctx, req: Request) -> Response<Body> {
                 read_domain(ctx, &sub).await,
                 now(),
             )))
+            .expect("response");
+    }
+
+    // Asset-looking paths (a KNOWN non-HTML file extension in the FINAL segment — a site's own
+    // `service-worker.js`, an `.mjs`/`.css`/`.wasm`/`.json`/image/font/…) MUST NOT receive the
+    // branded loader shell. A browser's service-worker REGISTRATION fetch (and an ES-module import)
+    // BYPASSES the page's controlling loader SW and hits this origin directly, so answering
+    // `/service-worker.js` with the shell's `text/html` made the browser reject registration with a
+    // MIME `SecurityError` (#144). The same masquerade would give any bypassing subresource fetch the
+    // wrong MIME. The resolver is a blind host — it cannot decrypt an encrypted store asset — so such
+    // a path (one the loader SW did not already serve) gets an honest, correctly-typed `404`, never
+    // the SPA-fallback shell (which stays only for the navigation/HTML routes below). A `404` also
+    // fails the registration cleanly WITHOUT evicting the loader SW (a browser installs a SW only
+    // from a 2xx script), so the store's content keeps decrypting.
+    if is_static_asset_path(&path) {
+        return Response::builder()
+            .status(404)
+            .header("content-type", "text/plain; charset=utf-8")
+            .header("cache-control", "no-store")
+            .header("x-content-type-options", "nosniff")
+            .body(Body::Text("Not found".to_string()))
             .expect("response");
     }
 
