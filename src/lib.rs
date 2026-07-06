@@ -63,6 +63,40 @@ pub fn custom_host_candidate(host: &str) -> Option<String> {
     Some(host)
 }
 
+/// Known static-asset file extensions (lowercased, no leading dot). A request path whose FINAL
+/// segment ends in one of these names a concrete static asset, never an application/navigation
+/// route. `html`/`htm` are deliberately ABSENT — a document/navigation request keeps getting the
+/// branded loader shell. Mirrors the extension set the loader's `sw.js` / `dig-embed.js`
+/// `contentType()` recognise (plus `map`, `wav`, `ogg`) — the resources a store legitimately ships.
+const STATIC_ASSET_EXTENSIONS: &[&str] = &[
+    "js", "mjs", "css", "json", "wasm", "map", "svg", "png", "jpg", "jpeg", "gif", "webp", "ico",
+    "avif", "woff", "woff2", "ttf", "otf", "txt", "pdf", "mp4", "webm", "mp3", "wav", "ogg", "xml",
+    "md",
+];
+
+/// Whether a request `path`'s FINAL segment names a concrete STATIC ASSET (a known non-HTML file
+/// extension) rather than an application/navigation route.
+///
+/// WHY (issue #144): the resolver serves the branded loader shell (`text/html`) for every
+/// navigation route so an SPA client-side deep-link boots the loader. But an asset path — most
+/// critically a site's own `service-worker.js` — MUST NOT receive `text/html`: a browser's
+/// service-worker *registration* fetch (and an ES-module `import`) BYPASSES the page's controlling
+/// loader service worker and hits this origin directly, so a `text/html` body makes the browser
+/// reject the registration with `SecurityError: unsupported MIME type ('text/html')`. The resolver
+/// is a blind host — it cannot decrypt an encrypted store asset — so an asset path that reaches it
+/// (i.e. one the loader SW did not already serve) gets an honest `404`, never the SPA-fallback shell.
+/// Only the final segment's extension decides, and only KNOWN asset extensions match, so an SPA
+/// route that merely contains a dot (`/user/john.doe`) stays a navigation route.
+pub fn is_static_asset_path(path: &str) -> bool {
+    let last = path.rsplit('/').next().unwrap_or("");
+    match last.rsplit_once('.') {
+        Some((name, ext)) if !name.is_empty() => {
+            STATIC_ASSET_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+        }
+        _ => false,
+    }
+}
+
 /// The status decision for a resolved subdomain. Drives the `/__dig/config.json` body ([`config_json_for`]).
 ///
 /// NOTE (#206b): the document `/` request no longer branches on this — it always serves the STATIC
@@ -621,6 +655,43 @@ mod tests {
         assert!(validate_label("alice").is_ok());
         assert!(validate_label("www").is_err());
         assert!(RESERVED_WORDS.contains(&"rpc"));
+    }
+
+    #[test]
+    fn is_static_asset_path_classifies_assets_vs_navigation() {
+        // Navigation / document routes (no extension, or an HTML extension) are NOT assets — they
+        // must keep getting the branded loader shell so an SPA client-side deep-link still boots.
+        assert!(!is_static_asset_path("/"));
+        assert!(!is_static_asset_path("/about"));
+        assert!(!is_static_asset_path("/chat/123"));
+        assert!(!is_static_asset_path("/index.html"));
+        assert!(!is_static_asset_path("/nested/page.htm"));
+        // An SPA route whose final segment contains a dot but not a KNOWN asset extension is still a
+        // navigation route (must not be mis-404'd) — e.g. a username or a version-like segment.
+        assert!(!is_static_asset_path("/user/john.doe"));
+        assert!(!is_static_asset_path("/v1.2"));
+
+        // The load-bearing case (#144): a service-worker registration fetch (and ES-module import)
+        // BYPASSES the page's controlling loader SW and hits this origin directly, so these MUST be
+        // classified as assets — the resolver then answers a clean 404 instead of the shell's
+        // text/html (which made the browser reject SW registration with a MIME SecurityError).
+        assert!(is_static_asset_path("/service-worker.js"));
+        assert!(is_static_asset_path("/sw.js"));
+        assert!(is_static_asset_path("/firebase-messaging-sw.js"));
+        assert!(is_static_asset_path("/assets/app.min.mjs"));
+
+        // Other known static assets that must get a real 404 (not the shell) when they reach the
+        // Lambda (i.e. a fetch that bypassed the decrypting loader SW).
+        assert!(is_static_asset_path("/styles/main.css"));
+        assert!(is_static_asset_path("/data/config.json"));
+        assert!(is_static_asset_path("/_framework/dotnet.wasm"));
+        assert!(is_static_asset_path("/img/logo.svg"));
+        assert!(is_static_asset_path("/bundle.js.map"));
+        assert!(is_static_asset_path("/PHOTO.PNG")); // extension match is case-insensitive
+
+        // Robustness: only the FINAL path segment's extension decides.
+        assert!(is_static_asset_path("/a.b.c/final.js"));
+        assert!(!is_static_asset_path("/a.b.c/final"));
     }
 
     fn domain(status: DomainStatus, exp: Option<u64>) -> Domain {
