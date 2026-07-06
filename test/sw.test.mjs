@@ -223,4 +223,13 @@ test("contentType", async () => {
   assert.equal(contentType("clip.mp3"), "audio/mpeg");
   assert.equal(contentType("unknown.xyz"), "application/octet-stream");
   assert.equal(contentType("noext"), "application/octet-stream");
+
+  // #144 regression: a store that ships its OWN service worker / ES modules must be served a JS MIME
+  // by the loader SW — NEVER text/html (a text/html script makes the browser reject SW registration
+  // and refuse to execute an ES module). These are the subresource reads the loader SW answers.
+  for (const key of ["service-worker.js", "sw.js", "app.min.mjs"]) {
+    const ct = contentType(key);
+    assert.ok(ct.startsWith("text/javascript"), `${key} must be a JS MIME, got ${ct}`);
+    assert.ok(!ct.startsWith("text/html"), `${key} must not be served as text/html`);
+  }
 });
