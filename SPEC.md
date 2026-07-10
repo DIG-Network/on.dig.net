@@ -102,6 +102,31 @@ asset bucket at the edge (zero Lambda). The bytes in the bucket MUST equal the b
 `sw.js` imports `/__dig/dig_client.js` and fetches `/__dig/dig_client_bg.wasm`; `dig-embed.js` loads
 the read-crypto WASM from `/dig-client/*` (its `ASSET_BASE`). Both path families MUST be served.
 
+### 3.2 Build-version exposure (CLAUDE.md §6.7)
+
+The two documents the Lambda serves to a browser — the loader shell (`assets/loader.html`) and the
+static error page (`assets/pages/error.html`, `PAGE_ERROR`) — carry a `%%APP_VERSION%%` placeholder
+that `on_dig_net_resolver::with_app_version` (pure, unit-tested) substitutes at serve time with the
+resolver's own compile-time semver (`env!("CARGO_PKG_VERSION")` — the SAME `Cargo.toml` version that
+drives the tag-on-merge release pipeline), so a bug report records which build served it:
+
+- **`loader.html`** (`LOADER_CSP` permits inline script) carries all three required forms: a
+  `<meta name="app-version" content="…">` tag, `window.__APP_VERSION__ = "…"` in the inline
+  bootstrap, and a visible muted `vX.Y.Z` tag (`data-testid="footer-app-version"`) on the branded card.
+- **`error.html`** (`STATIC_PAGE_CSP` is `script-src 'none'` — deliberately inert) carries only the
+  two forms its policy allows: the `<meta name="app-version">` tag and the visible `vX.Y.Z` text. No
+  `window.__APP_VERSION__` global is set on this page.
+- The four legacy per-status pages (`assets/pages/{available,pending,expired,revoked}.html`) are
+  NOT served by the Lambda (§3 — their copy now lives client-side on the loader shell, #206b) and do
+  not carry the placeholder.
+
+This repository does not embed the shared `<BugReportButton>`/`widget.js` (CLAUDE.md §6.7's other
+requirement): both `LOADER_CSP` and `STATIC_PAGE_CSP` (§6) are deliberately minimal, regression-tested
+trust boundaries on a NO-WAF edge service that serves arbitrary user content — `LOADER_CSP` permits
+no third-party script/connect origin at all today, and `STATIC_PAGE_CSP` permits none whatsoever
+(`script-src 'none'`). Widening either to allow `bugreport.dig.net`/`api.bugreport.dig.net` is a
+deliberate security decision for a follow-up task, not a default baseline add.
+
 ## 4. `/__dig/config.json` (authoritative status + pin)
 
 The document `/` is a STATIC branded shell (no per-request table lookup, no baked pin), byte-identical

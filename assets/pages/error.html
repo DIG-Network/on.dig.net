@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <meta name="color-scheme" content="dark">
+<!-- Build-version exposure (CLAUDE.md §6.7): %%APP_VERSION%% is a placeholder the resolver Lambda
+     substitutes at serve time (on_dig_net_resolver::with_app_version) with its own compile-time
+     Cargo.toml version. This page's CSP is script-src 'none' (deliberately inert), so only the meta
+     tag + the visible text form apply here — no JS version global is set on this page. -->
+<meta name="app-version" content="%%APP_VERSION%%">
 <title>DIG domain — temporarily unavailable</title>
 <style>
   /* DIG Network brand tokens (dark theme). All CSS inline + self-contained — no external fetch.
@@ -57,6 +62,10 @@
   h1 { font-size: 19px; font-weight: 600; margin: 0 0 14px; line-height: 1.35; }
   p { color: var(--muted); font-size: 14.5px; margin: 0 0 14px; }
   a { color: var(--dig-purple-hover); font-weight: 600; }
+  /* --muted, not --faint: --faint (#7e769b) on --surface (#16131f) is ~4.32:1, just under the
+     4.5:1 WCAG AA floor for normal text at this size; --muted (#a99fc4) clears it at ~7.36:1
+     (mirrors the .dig-sub / .mark .net contrast reasoning used across these templates). */
+  .version-tag { font-size: 11px; color: var(--muted); margin: 18px 0 0; }
 </style>
 </head>
 <body>
@@ -67,6 +76,7 @@
     <p>Please try again in a moment. If the problem persists, the domain may not be configured
     correctly.</p>
     <p><a href="https://hub.dig.net">Go to the DIG Network &rarr;</a></p>
+    <p class="version-tag" data-testid="footer-app-version">v%%APP_VERSION%%</p>
   </main>
 </body>
 </html>
