@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex" />
   <meta name="color-scheme" content="dark" />
+  <!-- Build-version exposure (CLAUDE.md §6.7): %%APP_VERSION%% is a placeholder the resolver Lambda
+       substitutes at serve time (on_dig_net_resolver::with_app_version) with its own compile-time
+       Cargo.toml version (env!("CARGO_PKG_VERSION")) — never hand-maintained here. -->
+  <meta name="app-version" content="%%APP_VERSION%%" />
   <title>Loading…</title>
   <!--
     *.on.dig.net resolver loader.
@@ -124,6 +128,9 @@
     }
     /* --faint, not --border: the dot separator on --border (#2a2440) was ~1.2:1 — invisible. */
     .dig-sub .dot { color: var(--faint); margin: 0 6px; }
+    /* Build-version tag (CLAUDE.md §6.7) — subtle, muted; --muted (not --faint) clears WCAG AA on
+       this card background at this small size (mirrors .dig-sub's own contrast reasoning above). */
+    .dig-version { font-size: 11px; color: var(--muted); margin: 18px 0 0; }
     @media (prefers-reduced-motion: reduce) {
       .dig-spinner { animation: none; }
     }
@@ -143,6 +150,9 @@
     // set, a slow / blocked / failed embed script (dead SW/WASM/RPC) leaves THIS branded card
     // visible rather than a blank overlay.
     window.__digLoaderShellPresent = true;
+    // Build-version global (CLAUDE.md §6.7) — same substituted value as the <meta app-version> tag
+    // above and the .dig-version footer text below.
+    window.__APP_VERSION__ = "%%APP_VERSION%%";
     // Non-active status copy — mirrors services/resolver/assets/pages/{pending,expired,revoked,
     // available}.html. On a non-active status (or a config fetch that fails/404s) we swap the
     // branded card's message to the matching copy WITHOUT navigating away: the branded shell stays,
@@ -241,6 +251,7 @@
     <div class="dig-spinner"></div>
     <p class="dig-msg">Loading content from the DIG Network…</p>
     <p class="dig-sub">Decrypting client&#8209;side<span class="dot">·</span>powered by Chia</p>
+    <p class="dig-version" data-testid="footer-app-version">v%%APP_VERSION%%</p>
   </main>
   <noscript>This DIG domain requires JavaScript to load its content.</noscript>
   <!--

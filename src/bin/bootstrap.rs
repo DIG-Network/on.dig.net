@@ -12,10 +12,15 @@
 use lambda_http::{run, service_fn, Body, Error, Request, Response};
 use on_dig_net_resolver::domain::Domain;
 use on_dig_net_resolver::{
-    config_json_for, custom_host_candidate, is_static_asset_path, subdomain_of, LOADER_CSP,
-    STATIC_PAGE_CSP,
+    config_json_for, custom_host_candidate, is_static_asset_path, subdomain_of, with_app_version,
+    LOADER_CSP, STATIC_PAGE_CSP,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// The resolver's own compile-time semver (Cargo.toml `version` — the SAME value the
+/// tag-on-merge release pipeline reads), substituted into the served documents'
+/// `%%APP_VERSION%%` placeholder (CLAUDE.md §6.7) so a bug report records which build served it.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Assets baked into the binary at compile time (same-origin; no CORS).
 const LOADER_HTML: &str = include_str!("../../assets/loader.html");
@@ -199,8 +204,9 @@ async fn handle(ctx: &Ctx, req: Request) -> Response<Body> {
             Some(s) => s,
             None => {
                 // Not an on.dig.net subdomain and not an active custom domain: serve the static
-                // error page as-is (no __SUB__ placeholder to substitute).
-                return html(404, PAGE_ERROR.to_string(), "no-store");
+                // error page (no __SUB__ placeholder to substitute; the build-version placeholder
+                // still is).
+                return html(404, with_app_version(PAGE_ERROR, APP_VERSION), "no-store");
             }
         },
     };
@@ -251,10 +257,10 @@ async fn handle(ctx: &Ctx, req: Request) -> Response<Body> {
     // status message (pending/expired/revoked/available) — always on the already-painted shell. It
     // carries LOADER_CSP (loader-shell trust context, #206) and is edge-cacheable (see the resolver
     // cache policy in infra/).
-    let _ = &sub; // sub validated the host; the shell itself needs no substitution
+    let _ = &sub; // sub validated the host; the shell needs no OTHER substitution
     html_with_csp(
         200,
-        LOADER_HTML.to_string(),
+        with_app_version(LOADER_HTML, APP_VERSION),
         "public, max-age=300",
         LOADER_CSP,
     )

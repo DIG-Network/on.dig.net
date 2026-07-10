@@ -1,0 +1,14 @@
+{
+  "name": "on-dig-net-a11y",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WCAG 2.2 AA accessibility gate for the two documents the resolver Lambda actually serves — the branded loader shell (assets/loader.html) and the static error page (assets/pages/error.html) — via axe-core over Playwright.",
+  "type": "module",
+  "scripts": {
+    "test": "node axe.test.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.1",
+    "playwright": "1.49.1"
+  }
+}

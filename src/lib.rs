@@ -175,6 +175,16 @@ pub fn csp_for(render: &Render) -> &'static str {
     }
 }
 
+/// Substitute the `%%APP_VERSION%%` build-version placeholder (CLAUDE.md §6.7) that the served
+/// documents (`loader.html`, `error.html`) carry in a `<meta name="app-version">` tag (and, on the
+/// loader shell only, a `window.__APP_VERSION__` assignment + a visible footer tag) with the
+/// resolver's own compile-time semver. Pure + testable here; `bootstrap.rs` calls this with
+/// `env!("CARGO_PKG_VERSION")` (the SAME Cargo.toml version that drives the release pipeline) when
+/// serving those documents, so the exposed version can never drift.
+pub fn with_app_version(html: &str, version: &str) -> String {
+    html.replace("%%APP_VERSION%%", version)
+}
+
 /// Pure render decision for the document request. `domain` is the looked-up row (or None).
 pub fn render_for(domain: Option<Domain>, now: u64) -> Render {
     let Some(d) = domain else {
@@ -481,6 +491,70 @@ mod csp_tests {
             LOADER_HTML.contains("__digLoaderShellPresent"),
             "loader.html must set window.__digLoaderShellPresent so the embed reuses the shell"
         );
+    }
+}
+
+/// CLAUDE.md §6.7 build-version exposure tests. Only the TWO documents `bootstrap.rs` actually
+/// serves — `loader.html` (LOADER_CSP) and `error.html`/`PAGE_ERROR` (STATIC_PAGE_CSP) — carry the
+/// placeholder; the four legacy per-status pages (available/pending/expired/revoked.html) are no
+/// longer served (their copy lives client-side on the loader shell, #206b) and are out of scope.
+#[cfg(test)]
+mod version_tests {
+    use super::with_app_version;
+
+    const LOADER_HTML: &str = include_str!("../assets/loader.html");
+    const PAGE_ERROR: &str = include_str!("../assets/pages/error.html");
+
+    #[test]
+    fn with_app_version_replaces_every_placeholder_occurrence() {
+        let out = with_app_version("a %%APP_VERSION%% b %%APP_VERSION%% c", "1.2.3");
+        assert_eq!(out, "a 1.2.3 b 1.2.3 c");
+        assert!(!out.contains("%%APP_VERSION%%"));
+    }
+
+    #[test]
+    fn with_app_version_is_a_no_op_when_the_placeholder_is_absent() {
+        assert_eq!(
+            with_app_version("no placeholder here", "1.2.3"),
+            "no placeholder here"
+        );
+    }
+
+    #[test]
+    fn loader_html_carries_the_placeholder_in_all_3_forms() {
+        // <meta app-version>, window.__APP_VERSION__, and a visible footer tag (LOADER_CSP permits
+        // inline script, so the loader shell gets the full 3-form contract).
+        assert!(LOADER_HTML.contains(r#"<meta name="app-version" content="%%APP_VERSION%%""#));
+        assert!(LOADER_HTML.contains(r#"window.__APP_VERSION__ = "%%APP_VERSION%%""#));
+        assert!(LOADER_HTML.contains(r#"data-testid="footer-app-version">v%%APP_VERSION%%"#));
+    }
+
+    #[test]
+    fn error_html_carries_the_placeholder_in_the_2_forms_its_inert_csp_allows() {
+        // STATIC_PAGE_CSP is script-src 'none' by design — no window global here, only the meta
+        // tag + the visible text form.
+        assert!(PAGE_ERROR.contains(r#"<meta name="app-version" content="%%APP_VERSION%%""#));
+        assert!(PAGE_ERROR.contains(r#"data-testid="footer-app-version">v%%APP_VERSION%%"#));
+        assert!(!PAGE_ERROR.contains("window.__APP_VERSION__"));
+    }
+
+    #[test]
+    fn served_documents_are_fully_substituted_and_never_leak_the_placeholder() {
+        for (name, html) in [("loader.html", LOADER_HTML), ("error.html", PAGE_ERROR)] {
+            let out = with_app_version(html, "0.3.1");
+            assert!(
+                !out.contains("%%APP_VERSION%%"),
+                "{name}: placeholder must not survive substitution"
+            );
+            assert!(
+                out.contains(r#"content="0.3.1""#),
+                "{name}: the real version must appear in the meta tag"
+            );
+            assert!(
+                out.contains("v0.3.1"),
+                "{name}: the real version must appear in the visible footer tag"
+            );
+        }
     }
 }
 

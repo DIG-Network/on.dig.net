@@ -52,6 +52,26 @@ jobs:
       # no wasm build needed. See test/load-sw.mjs for how assets/sw.js is loaded under Node.
       - run: node --test test/sw.test.mjs
 
+  a11y:
+    name: accessibility (axe WCAG 2.2 AA on the served documents)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+      - name: install a11y test deps
+        working-directory: tests/a11y
+        run: npm ci
+      - name: install chromium (with system deps)
+        working-directory: tests/a11y
+        run: npx playwright install --with-deps chromium
+      # loader.html / error.html are the ONLY two documents src/bin/bootstrap.rs serves to a
+      # browser (see tests/a11y/axe.test.mjs) — the four legacy per-status pages are dead code.
+      - name: axe — assert 0 WCAG 2.2 AA violations on the served documents
+        working-directory: tests/a11y
+        run: npm test
+
   audit:
     name: cargo-deny
     runs-on: ubuntu-latest
