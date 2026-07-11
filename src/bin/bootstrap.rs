@@ -9,10 +9,12 @@
 //!
 //! This binary only compiles under `--features aws,net`.
 
+use lambda_http::http::Method;
 use lambda_http::{run, service_fn, Body, Error, Request, Response};
 use on_dig_net_resolver::domain::Domain;
 use on_dig_net_resolver::{
-    config_json_for, custom_host_candidate, is_static_asset_path, subdomain_of, with_app_version,
+    config_json_for, custom_host_candidate, head_urn_for, is_static_asset_path, subdomain_of,
+    with_app_version, HeadUrn, HEAD_URN_CORS_ALLOW_ORIGIN, HEAD_URN_CORS_EXPOSE_HEADERS,
     LOADER_CSP, STATIC_PAGE_CSP,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -139,6 +141,48 @@ async fn resolve_custom_host(ctx: &Ctx, host: &str) -> Option<String> {
     v["sub"].as_str().map(str::to_string)
 }
 
+/// Build the `HEAD /` → URN response (#308 Part A). `Some(urn)` (an Active pinned subdomain)
+/// answers 200 carrying `X-Dig-URN` (plus `X-Dig-Store`, and `X-Dig-Root` only when root-locked)
+/// and NO body (HEAD semantics). `None` (unmapped / pending / expired / revoked / a reclaimed
+/// Reserved hold) answers 404, with no `X-Dig-*` header and no body.
+///
+/// CORS is permissive (`*`) + exposes the `X-Dig-*` headers so a cross-origin caller — the
+/// dig-chrome-extension's `chrome-extension://` background context doing this HEAD probe for its
+/// URN bar, #308 Part B — can actually read them via `fetch` (browsers hide non-"simple" response
+/// headers from a cross-origin reader by default even when the origin is allowed).
+///
+/// `Cache-Control: no-store`: this is a distinct, METHOD-GATED response sharing the path `/` with
+/// the cached GET loader shell. CloudFront's cache key does not include the HTTP method by
+/// default, so GET and HEAD would otherwise share one cache entry (whichever reaches the origin
+/// first would silently answer the other's viewers until expiry) — `infra/cloudfront.tf` extends
+/// the cache key with the request method (`x-dig-method`) so GET and HEAD are cache-isolated;
+/// `no-store` here is a second, belt-and-braces guarantee that this exact response is never itself
+/// the one CloudFront caches.
+fn head_urn_response(urn: Option<HeadUrn>) -> Response<Body> {
+    let builder = Response::builder()
+        .header("x-content-type-options", "nosniff")
+        .header("cache-control", "no-store")
+        .header("access-control-allow-origin", HEAD_URN_CORS_ALLOW_ORIGIN)
+        .header(
+            "access-control-expose-headers",
+            HEAD_URN_CORS_EXPOSE_HEADERS,
+        );
+    let builder = match urn {
+        Some(h) => {
+            let mut b = builder
+                .status(200)
+                .header("x-dig-urn", h.urn)
+                .header("x-dig-store", h.store_id);
+            if let Some(root) = h.root {
+                b = b.header("x-dig-root", root);
+            }
+            b
+        }
+        None => builder.status(404),
+    };
+    builder.body(Body::Empty).expect("response")
+}
+
 async fn handle(ctx: &Ctx, req: Request) -> Response<Body> {
     let path = req.uri().path().to_string();
     // CloudFront (AllViewerExceptHostHeader) rewrites `Host` to the APIGW origin domain, so the
@@ -191,6 +235,24 @@ async fn handle(ctx: &Ctx, req: Request) -> Response<Body> {
                 .expect("response")
         }
         _ => {}
+    }
+
+    // #308 Part A: HEAD to the document root resolves the mapped canonical URN (X-Dig-URN/-Store/
+    // -Root) instead of the branded loader shell — for the dig-chrome-extension URN bar (#308 Part
+    // B) to load on.dig.net content through the LOCAL NODE protocol rather than this CDN subdomain.
+    // Reuses the EXACT SAME subdomain→pin resolution as GET/config.json (subdomain_of /
+    // resolve_custom_host / read_domain) — no new data path. GET `/` (below) is entirely UNCHANGED:
+    // it still serves the static loader shell with no per-request lookup (#206b).
+    if *req.method() == Method::HEAD && path == "/" {
+        let sub = match subdomain_of(host) {
+            Some(s) => Some(s),
+            None => resolve_custom_host(ctx, host).await,
+        };
+        let domain = match &sub {
+            Some(s) => read_domain(ctx, s).await,
+            None => None,
+        };
+        return head_urn_response(head_urn_for(domain, now()));
     }
 
     // Resolve the host to a `<sub>`. The PRIMARY path is the wildcard `*.on.dig.net` resolve

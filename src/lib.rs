@@ -218,6 +218,56 @@ pub fn loader_config(d: &Domain) -> String {
     .replace("</", "<\\/") // prevent </script> breakout when embedded inline in the loader HTML
 }
 
+/// The canonical DIG URN grammar this repo speaks (`SYSTEM.md` → "Digstore URN scheme"):
+/// `urn:dig:chia:<storeId>` (rootless — tracks latest) or `urn:dig:chia:<storeId>:<root>` (rooted —
+/// a frozen snapshot). Chain is always `chia` today (the only chain a `*.on.dig.net` domain pins).
+fn urn_for(store_id: &str, root: Option<&str>) -> String {
+    match root {
+        Some(root) => format!("urn:dig:chia:{store_id}:{root}"),
+        None => format!("urn:dig:chia:{store_id}"),
+    }
+}
+
+/// The `X-Dig-*` header payload for a `HEAD /` response (#308 Part A) — the canonical URN a
+/// subdomain maps to, expressed via the grammar above instead of `/__dig/config.json`'s JSON pin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadUrn {
+    /// The full canonical URN (`X-Dig-URN`).
+    pub urn: String,
+    /// The 64-hex store id alone (`X-Dig-Store`).
+    pub store_id: String,
+    /// The pinned root, when the domain is root-locked (`X-Dig-Root`); `None` tracks latest.
+    pub root: Option<String>,
+}
+
+/// Resolve the `HEAD /` URN payload for a looked-up domain row (or `None` for a subdomain with no
+/// row at all). Reuses the EXACT SAME Active/reclaimable decision [`render_for`] makes — never a
+/// second pin-resolution path — so `HEAD /` and `/__dig/config.json` can never disagree about
+/// whether a subdomain is live. Returns `None` (⇒ the caller answers 404, no `X-Dig-*` header) for
+/// every non-Active outcome: unmapped, pending, expired, revoked, or a lapsed/reclaimed Reserved
+/// hold — none of those carry a pin to expose.
+pub fn head_urn_for(domain: Option<Domain>, now: u64) -> Option<HeadUrn> {
+    let d = domain?;
+    if d.is_reclaimable(now) || d.effective_status() != DomainStatus::Active {
+        return None;
+    }
+    Some(HeadUrn {
+        urn: urn_for(&d.pinned_store_id, d.pinned_root.as_deref()),
+        store_id: d.pinned_store_id,
+        root: d.pinned_root,
+    })
+}
+
+/// CORS for the `HEAD /` → URN response (#308 Part A). The mapped storeId/root is already public —
+/// any visitor can read the SAME pin same-origin from `/__dig/config.json` — so a permissive
+/// wildcard origin costs nothing and lets a CROSS-ORIGIN caller (the dig-chrome-extension's
+/// `chrome-extension://` background context, doing the HEAD probe for its URN bar, #308 Part B)
+/// actually read the response at all. `Access-Control-Expose-Headers` is required separately:
+/// browsers hide non-"simple" response headers from cross-origin `fetch()` callers by default even
+/// when the origin is allowed, so `X-Dig-*` must be explicitly exposed.
+pub const HEAD_URN_CORS_ALLOW_ORIGIN: &str = "*";
+pub const HEAD_URN_CORS_EXPOSE_HEADERS: &str = "X-Dig-URN, X-Dig-Store, X-Dig-Root";
+
 /// The client-facing status string for a document `Render` (the `status` field of
 /// `/__dig/config.json`). This is the single mapping the loader shell keys off after its INSTANT
 /// branded paint: `active` proceeds to decrypt + render content; every other value swaps the
@@ -649,6 +699,117 @@ mod tests {
         assert_eq!(v["rpc"], "https://rpc.dig.net/");
         assert_eq!(v["subdomain"], "foo");
         assert!(v["salt"].is_null());
+    }
+
+    // #308 Part A — `HEAD /` → the mapped canonical URN. `head_urn_for` mirrors `render_for`'s
+    // Active/reclaimable decision exactly, but reports the URN grammar instead of the config.json
+    // pin JSON.
+    #[test]
+    fn head_urn_for_active_rooted_domain_carries_the_rooted_urn() {
+        use crate::domain::{Domain, DomainStatus};
+        let d = Domain {
+            subdomain: "foo".into(),
+            owner_ph: "p".into(),
+            pinned_store_id: "aa".repeat(32),
+            pinned_root: Some("bb".repeat(32)),
+            salt: None,
+            status: DomainStatus::Active,
+            registered_at: Some(0),
+            expires_at: None,
+            renewal_due_at: None,
+            reg_spend_id: None,
+            reg_coin_id: None,
+            created_at: 0,
+            reg_price_baseunits: None,
+        };
+        let h = head_urn_for(Some(d), 100).expect("Active domain must carry a URN");
+        assert_eq!(
+            h.urn,
+            format!("urn:dig:chia:{}:{}", "aa".repeat(32), "bb".repeat(32))
+        );
+        assert_eq!(h.store_id, "aa".repeat(32));
+        assert_eq!(h.root, Some("bb".repeat(32)));
+    }
+
+    #[test]
+    fn head_urn_for_active_rootless_domain_carries_the_rootless_urn() {
+        use crate::domain::{Domain, DomainStatus};
+        let d = Domain {
+            subdomain: "foo".into(),
+            owner_ph: "p".into(),
+            pinned_store_id: "cc".repeat(32),
+            pinned_root: None, // tracks latest
+            salt: None,
+            status: DomainStatus::Active,
+            registered_at: Some(0),
+            expires_at: None,
+            renewal_due_at: None,
+            reg_spend_id: None,
+            reg_coin_id: None,
+            created_at: 0,
+            reg_price_baseunits: None,
+        };
+        let h = head_urn_for(Some(d), 100).expect("Active domain must carry a URN");
+        assert_eq!(h.urn, format!("urn:dig:chia:{}", "cc".repeat(32)));
+        assert_eq!(h.store_id, "cc".repeat(32));
+        assert_eq!(h.root, None);
+    }
+
+    #[test]
+    fn head_urn_for_unmapped_subdomain_is_none() {
+        // No row at all (an unmapped subdomain) → no URN → caller answers 404.
+        assert_eq!(head_urn_for(None, 100), None);
+    }
+
+    #[test]
+    fn head_urn_for_non_active_statuses_are_none() {
+        use crate::domain::{Domain, DomainStatus};
+        let base = |status, exp| Domain {
+            subdomain: "foo".into(),
+            owner_ph: "p".into(),
+            pinned_store_id: "aa".repeat(32),
+            pinned_root: None,
+            salt: None,
+            status,
+            registered_at: Some(0),
+            expires_at: exp,
+            renewal_due_at: None,
+            reg_spend_id: None,
+            reg_coin_id: None,
+            created_at: 0,
+            reg_price_baseunits: None,
+        };
+        assert_eq!(
+            head_urn_for(Some(base(DomainStatus::Pending, None)), 100),
+            None
+        );
+        assert_eq!(
+            head_urn_for(Some(base(DomainStatus::Expired, None)), 100),
+            None
+        );
+        assert_eq!(
+            head_urn_for(Some(base(DomainStatus::Revoked, None)), 100),
+            None
+        );
+        // A live (non-lapsed) Reserved hold: not yet Active.
+        assert_eq!(
+            head_urn_for(Some(base(DomainStatus::Reserved, Some(1000))), 100),
+            None
+        );
+        // A lapsed Reserved hold (reclaimable → available): also None.
+        assert_eq!(
+            head_urn_for(Some(base(DomainStatus::Reserved, Some(50))), 51),
+            None
+        );
+    }
+
+    #[test]
+    fn head_urn_cors_constants_expose_exactly_the_dig_headers() {
+        assert_eq!(HEAD_URN_CORS_ALLOW_ORIGIN, "*");
+        assert_eq!(
+            HEAD_URN_CORS_EXPOSE_HEADERS,
+            "X-Dig-URN, X-Dig-Store, X-Dig-Root"
+        );
     }
 
     #[test]
