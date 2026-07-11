@@ -66,6 +66,7 @@ All responses set `x-content-type-options: nosniff`.
 | `GET /__dig/config.json` | Lambda | `application/json`, `max-age=30`, see §4 |
 | `GET /<asset-looking path>` | Lambda | `404`, `text/plain`, `no-store`, `nosniff` (see §3.1) |
 | `GET /` (and any other NAVIGATION path) | Lambda | the STATIC branded loader shell, `text/html`, `max-age=300`, `LOADER_CSP` |
+| `HEAD /` | Lambda | the mapped canonical URN — see §3.3 |
 | unresolvable host | Lambda | `404`, the static error page, `no-store`, static-page CSP |
 
 ### 3.1 Asset-looking paths MUST NOT get the loader shell
@@ -126,6 +127,44 @@ trust boundaries on a NO-WAF edge service that serves arbitrary user content —
 no third-party script/connect origin at all today, and `STATIC_PAGE_CSP` permits none whatsoever
 (`script-src 'none'`). Widening either to allow `bugreport.dig.net`/`api.bugreport.dig.net` is a
 deliberate security decision for a follow-up task, not a default baseline add.
+
+### 3.3 `HEAD /` → the mapped canonical URN
+
+`HEAD /` (the document root, any `*.on.dig.net` subdomain or attached custom domain) answers with
+the subdomain's mapped canonical URN instead of the loader shell, so a client can resolve a
+subdomain to its URN WITHOUT loading (or even reaching) the loader — e.g. the dig-chrome-extension
+URN bar resolving `<sub>.on.dig.net`/`chia://<sub>.on.dig.net` to load the content through the
+local-node protocol (§5.3 client→node ladder) instead of this CDN subdomain.
+
+The resolver reuses the EXACT SAME subdomain→pin resolution `GET /` and `GET /__dig/config.json`
+already do (`subdomain_of` / the custom-domain `CUSTOMDOM#` fallback / the `DOMAIN#<sub>` row read,
+§2 + §5) and the SAME Active/reclaimable decision (§4) — never a second pin-resolution path:
+
+- **Mapped + Active** (a live pin, not a reclaimed/lapsed Reserved hold) → `200`, no body, carrying:
+  - `X-Dig-URN: urn:dig:chia:<storeId>` (rootless — tracks latest) or
+    `X-Dig-URN: urn:dig:chia:<storeId>:<root>` (rooted — a frozen snapshot), matching the canonical
+    URN grammar (`SYSTEM.md` → "Digstore URN scheme").
+  - `X-Dig-Store: <storeId>` (the 64-hex store id alone).
+  - `X-Dig-Root: <root>` — present ONLY when the domain is root-locked; absent (never empty) when
+    the domain tracks latest.
+- **Unmapped / pending / expired / revoked / a reclaimed Reserved hold** → `404`, no body, no
+  `X-Dig-*` header of any kind.
+- Every `HEAD /` response (both branches) also carries:
+  - `x-content-type-options: nosniff`.
+  - `Cache-Control: no-store` — this is a distinct, METHOD-GATED response sharing the path `/` with
+    the cached `GET /` loader shell; the edge cache key is extended with the request method
+    (§7) so `GET`/`HEAD` never share a cache entry, and this header is a second, belt-and-braces
+    guarantee that a `HEAD` response is never itself the one CloudFront caches.
+  - `Access-Control-Allow-Origin: *` and `Access-Control-Expose-Headers: X-Dig-URN, X-Dig-Store,
+    X-Dig-Root` — the mapped pin is already public (the SAME data is readable same-origin from
+    `/__dig/config.json`), so a permissive wildcard origin is safe and lets a CROSS-ORIGIN caller
+    (a `chrome-extension://` background context) actually read the `X-Dig-*` headers via `fetch`
+    (browsers hide non-"simple" response headers from a cross-origin reader by default even when
+    the origin is allowed).
+
+`GET /` (and every other route) is UNCHANGED by this: the loader shell still serves with no
+per-request table lookup (§4), no CORS headers, and its existing `Cache-Control: public,
+max-age=300`.
 
 ## 4. `/__dig/config.json` (authoritative status + pin)
 
@@ -192,6 +231,10 @@ CONTENT sandbox's concern and MUST NOT appear in `LOADER_CSP`.
   config cache key MUST include `x-dig-host` (per-subdomain) and MUST NOT include `Host` (forwarding
   the viewer `Host` to API Gateway yields 403). The static-asset cache key is path + query only (no
   host) — the assets are identical across subdomains.
+- The SAME viewer-request function also copies the viewer's HTTP method → `x-dig-method`, and the
+  document + config cache key ALSO includes it (§3.3): CloudFront's cache key omits the method by
+  default, so `GET`/`HEAD` to `/` would otherwise share one cache entry even though they answer
+  differently (the loader shell vs. the mapped URN) — the extra key dimension keeps them isolated.
 - `viewer_protocol_policy = redirect-to-https` (a plain-http navigation 301s, never 403s).
 - IPv6 MUST be enabled. There MUST be NO WAF (each subdomain serves arbitrary user content).
 - Exactly ONE wildcard alias `*.on.dig.net` on this distribution; subdomains are resolved solely by

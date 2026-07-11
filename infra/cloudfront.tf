@@ -32,6 +32,19 @@ data "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
 # status differ per subdomain). MUST key on `x-dig-host`, NOT `Host`: the behavior uses the managed
 # AllViewerExceptHostHeader origin-request policy which rewrites Host to the execute-api origin;
 # putting `Host` in the cache key forwards the VIEWER Host to API Gateway → 403 Forbidden.
+#
+# Also includes `x-dig-method` (#308 Part A): CloudFront's cache key does not include the HTTP
+# method by default, so a `cached_methods = ["GET","HEAD"]` behavior caches GET and HEAD responses
+# to the SAME path under the SAME entry — whichever reaches the origin first answers the other's
+# viewers until the entry expires. That is fine when GET and HEAD would return identical bodies-
+# minus-headers, but `/` deliberately does NOT: GET always serves the static loader shell (200),
+# while HEAD answers the mapped subdomain's canonical URN (`X-Dig-URN` etc., 200 or 404 depending on
+# domain status) with the resolver Lambda's own explicit `Cache-Control: no-store` on that response.
+# Splitting the cache key on the method (set by the function below) keeps GET's cacheable loader
+# shell and HEAD's uncached URN answer from ever colliding, at zero extra latency (a CloudFront
+# Function, not a Lambda@Edge round trip). `/__dig/config.json` is method-agnostic (identical body
+# for GET/HEAD) so the extra key dimension is harmless there — just a second, always-fresh cache
+# slot nobody currently populates via HEAD.
 resource "aws_cloudfront_cache_policy" "resolver_doc" {
   name        = "on-dig-net-resolver-doc"
   default_ttl = 300
@@ -46,7 +59,7 @@ resource "aws_cloudfront_cache_policy" "resolver_doc" {
     headers_config {
       header_behavior = "whitelist"
       headers {
-        items = ["x-dig-host"]
+        items = ["x-dig-host", "x-dig-method"]
       }
     }
     query_strings_config {
@@ -158,10 +171,14 @@ resource "aws_cloudfront_response_headers_policy" "resolver_static" {
 # the Lambda can't see which *.on.dig.net subdomain was requested. This viewer-request function
 # preserves the original viewer host in x-dig-host BEFORE CloudFront rewrites Host; the Lambda reads
 # x-dig-host to extract the subdomain.
+#
+# Also stamps x-dig-method with the viewer's HTTP method (#308 Part A), whitelisted into the
+# resolver_doc cache policy above so GET and HEAD to `/` never share a cache entry — see that
+# resource's comment for why.
 resource "aws_cloudfront_function" "resolver_host" {
   name    = "on-dig-net-resolver-host"
   runtime = "cloudfront-js-2.0"
-  comment = "Preserve the viewer Host in x-dig-host so the resolver Lambda can read the subdomain."
+  comment = "Preserve the viewer Host + method in x-dig-host/x-dig-method for the resolver Lambda + cache key."
   publish = true
   code    = <<-EOT
     function handler(event) {
@@ -169,6 +186,7 @@ resource "aws_cloudfront_function" "resolver_host" {
       if (request.headers.host) {
         request.headers['x-dig-host'] = { value: request.headers.host.value };
       }
+      request.headers['x-dig-method'] = { value: request.method };
       return request;
     }
   EOT
