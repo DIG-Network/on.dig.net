@@ -30,9 +30,10 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-      - uses: taiki-e/install-action@37bdc826eaedac215f638a96472df572feab0f9b # v2.49.30
-        with:
-          tool: cargo-nextest
+      # Install cargo-nextest straight from crates.io (no third-party GitHub-release-manifest
+      # installer action — avoids the release-manifest fetch flakiness those actions can hit
+      # against GitHub's API). rust-cache above caches the build.
+      - run: cargo install cargo-nextest --locked
       - run: cargo fmt --all --check
       # Lint the pure lib (+ its tests) and the AWS Lambda binaries (both bins are feature-gated
       # behind `aws`, so they are skipped without the feature — lint each explicitly).
