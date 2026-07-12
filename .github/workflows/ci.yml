@@ -30,13 +30,22 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - uses: taiki-e/install-action@37bdc826eaedac215f638a96472df572feab0f9b # v2.49.30
+        with:
+          tool: cargo-nextest
       - run: cargo fmt --all --check
       # Lint the pure lib (+ its tests) and the AWS Lambda binaries (both bins are feature-gated
       # behind `aws`, so they are skipped without the feature — lint each explicitly).
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --bin bootstrap --features aws -- -D warnings
       - run: cargo clippy --bin watcher --features aws -- -D warnings
-      - run: cargo test --all-targets
+      # cargo-nextest for flaky-test management (#489): --retries retries a failing test up to N
+      # times before failing the run, surfacing genuine flakes without masking real regressions
+      # (a test that fails every retry still fails the job). Config lives in .config/nextest.toml.
+      - run: cargo nextest run --all-targets
+      # nextest does not run doctests — keep them covered separately (this repo's lib has none
+      # today, but this stays correct if any are added).
+      - run: cargo test --doc
 
   js:
     name: js test
