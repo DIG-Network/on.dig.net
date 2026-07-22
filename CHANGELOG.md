@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.2] - 2026-07-22
+
+### Testing
+- **on.dig.net:** Cover sw.js decrypt/serve paths + gate the JS CI at ≥80% (§2.3) (#8)
+
 ## [0.5.1] - 2026-07-12
 
 ### CI
