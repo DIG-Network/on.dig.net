@@ -817,11 +817,12 @@ self.addEventListener("fetch", (event) => {
 });
 
 // ---- Test-only exports --------------------------------------------------------
-// Additive named exports of the pure/testable helpers (harmless for the SW runtime — a module
-// service worker executes for its side effects; nothing consumes these exports in the browser).
-// Used by test/sw.test.mjs so the range-planner, parallel fan-out, cache-key builders, and
-// decrypt-stream assembly get real unit coverage without needing a browser (see that file for the
-// stubbing strategy for the wasm-bindgen import and the `self`/`caches` globals).
+// Additive named exports of the pure/testable helpers AND the network/decrypt/cache orchestration
+// entry points (harmless for the SW runtime — a module service worker executes for its side
+// effects; nothing consumes these exports in the browser). Used by the unit tests so the
+// range-planner, parallel fan-out, cache-key builders, decrypt-stream assembly, the RPC/GET fetch
+// paths, and the full serveUrn control flow get real coverage without a browser (see the tests for
+// the stubbing strategy for the wasm-bindgen import, `self`/`caches`, and `fetch`).
 export {
   planWindows,
   runParallel,
@@ -833,4 +834,29 @@ export {
   parseChunkLensHeader,
   parseDigUrn,
   contentType,
+  b64ToBytes,
+  resourceHeaders,
+  cfgFromRegistration,
+  urnForPath,
+  loadDigClientWasmResponse,
+  ensureDig,
+  rpcCall,
+  fetchVerified,
+  fetchVerifiedGet,
+  fetchVerifiedPost,
+  matchContentCache,
+  putContentCache,
+  serveUrn,
+  __resetStateForTest,
 };
+
+/**
+ * Test-only: reset the module-level state (`CFG`, the memoised `digReady`, the in-memory `CACHE`)
+ * between unit tests. A no-op concern in the browser, where each SW registration is a fresh module
+ * instance; NOT part of the service-worker runtime contract.
+ */
+function __resetStateForTest() {
+  CFG = null;
+  digReady = null;
+  CACHE.clear();
+}

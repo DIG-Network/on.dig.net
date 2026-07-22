@@ -30,23 +30,13 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-      # Install cargo-nextest straight from crates.io (no third-party GitHub-release-manifest
-      # installer action — avoids the release-manifest fetch flakiness those actions can hit
-      # against GitHub's API). rust-cache above caches the build.
-      - run: cargo install cargo-nextest --locked
       - run: cargo fmt --all --check
       # Lint the pure lib (+ its tests) and the AWS Lambda binaries (both bins are feature-gated
       # behind `aws`, so they are skipped without the feature — lint each explicitly).
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --bin bootstrap --features aws -- -D warnings
       - run: cargo clippy --bin watcher --features aws -- -D warnings
-      # cargo-nextest for flaky-test management (#489): --retries retries a failing test up to N
-      # times before failing the run, surfacing genuine flakes without masking real regressions
-      # (a test that fails every retry still fails the job). Config lives in .config/nextest.toml.
-      - run: cargo nextest run --all-targets
-      # nextest does not run doctests — keep them covered separately (this repo's lib has none
-      # today, but this stays correct if any are added).
-      - run: cargo test --doc
+      - run: cargo test --all-targets
 
   js:
     name: js test
@@ -57,10 +47,24 @@ jobs:
         with:
           node-version: "22"
       # No package.json / dependencies: the sw.js orchestration logic (range planner, parallel
-      # fan-out, cache-key builders, decrypt-stream assembly, §205d/§205e) is tested with Node's
-      # built-in test runner + a small in-repo crypto stub (test/stub-dig-client.mjs) — no browser,
-      # no wasm build needed. See test/load-sw.mjs for how assets/sw.js is loaded under Node.
-      - run: node --test test/sw.test.mjs
+      # fan-out, cache-key builders, decrypt-stream assembly, the RPC/GET fetch paths, and the full
+      # serveUrn control flow, §205a/§205d/§205e) is tested with Node's built-in test runner + a
+      # small in-repo crypto stub (test/stub-dig-client.mjs) — no browser, no wasm build needed. See
+      # test/load-sw.mjs for how the REAL assets/sw.js is loaded (with V8 coverage attribution).
+      #
+      # Coverage is a REQUIRED gate (§2.3): the run FAILS below 80% line/branch/function coverage of
+      # the measured source (test/** is excluded so the floor reflects assets/sw.js itself). The
+      # only measured file today is assets/sw.js; any future loader JS is measured + held to the
+      # same floor automatically.
+      - name: js unit tests + coverage gate (≥80% lines/branches/functions)
+        run: >-
+          node --test
+          --experimental-test-coverage
+          --test-coverage-exclude='test/**'
+          --test-coverage-lines=80
+          --test-coverage-branches=80
+          --test-coverage-functions=80
+          test/sw.test.mjs test/sw-runtime.test.mjs
 
   a11y:
     name: accessibility (axe WCAG 2.2 AA on the served documents)
