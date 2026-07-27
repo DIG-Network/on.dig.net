@@ -29,3 +29,16 @@ regression can't make a stale URN answer stick).
 same path to diverge in anything beyond "same headers, no body", the cache key MUST be split on
 method (or one of the two must be made explicitly non-cacheable end-to-end) — don't assume
 CloudFront caches them independently.
+
+## Rust coverage gate is scoped to the pure lib; the Lambda bins are excluded (#1680)
+
+The `test` CI job enforces a `cargo llvm-cov --fail-under-lines/functions/regions 80` gate over
+`src/lib.rs` + `src/domain.rs` + `src/watcher.rs` — the resolver's real decision logic, all
+unit-testable without AWS. The feature-gated Lambda entrypoints (`src/bin/bootstrap.rs`,
+`src/bin/watcher.rs`) are excluded via `--ignore-filename-regex 'src/bin/'`: they are thin AWS/HTTP
+wiring (DynamoDB GetItem, coinset.org fetch, CloudFront invalidation, `lambda_http` glue) that only
+runs under the `aws` feature and is exercised by deploy, not units — and their pure decision logic
+already lives in the measured lib modules (that lib/bin split is the whole design, per SPEC/README).
+Under default features the bins aren't even compiled, so the exclusion is belt-and-braces. Baseline
+at gate wire-up was already 99.47% lines / 99.01% functions, so the gate wired green with no new
+tests. Verified the gate actually FIRES: `--fail-under-lines 100` exits 1, `80` exits 0.

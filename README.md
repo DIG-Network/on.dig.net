@@ -43,6 +43,7 @@ resolves status + pin async from `/__dig/config.json`. See `SPEC.md` for the ful
 
 ```bash
 cargo test --all-targets                              # pure lib + asset-regression tests (no AWS)
+cargo llvm-cov --ignore-filename-regex 'src/bin/' --fail-under-lines 80  # ≥80% coverage gate (§2.3)
 cargo clippy --all-targets -- -D warnings
 cargo clippy --bin bootstrap --features aws -- -D warnings
 cargo clippy --bin watcher --features aws -- -D warnings

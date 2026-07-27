@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - run: cargo fmt --all --check
       # Lint the pure lib (+ its tests) and the AWS Lambda binaries (both bins are feature-gated
@@ -37,6 +37,23 @@ jobs:
       - run: cargo clippy --bin bootstrap --features aws -- -D warnings
       - run: cargo clippy --bin watcher --features aws -- -D warnings
       - run: cargo test --all-targets
+      # Rust coverage gate (§2.3), mirroring the JS `js` job's ≥80% floor. Measures the pure
+      # resolver LOGIC — src/lib.rs (subdomain/URN/render/config decisions) + src/domain.rs
+      # (record shape + label/lifecycle rules) + src/watcher.rs (the AWS-free chain-change decision
+      # core). EXCLUDED (`--ignore-filename-regex 'src/bin/'`): the feature-gated Lambda
+      # entrypoints src/bin/bootstrap.rs + src/bin/watcher.rs — thin AWS/HTTP wiring (DynamoDB
+      # GetItem, coinset.org fetch, CloudFront invalidation, lambda_http glue) exercised by deploy,
+      # not unit-testable without live AWS; their pure decision logic already lives in the measured
+      # lib modules. The run FAILS below 80% line/function/region coverage of that scoped set.
+      - name: install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: rust coverage gate (≥80% lines/functions/regions of the resolver logic)
+        run: >-
+          cargo llvm-cov
+          --ignore-filename-regex 'src/bin/'
+          --fail-under-lines 80
+          --fail-under-functions 80
+          --fail-under-regions 80
 
   js:
     name: js test
