@@ -29,3 +29,7 @@ regression can't make a stale URN answer stick).
 same path to diverge in anything beyond "same headers, no body", the cache key MUST be split on
 method (or one of the two must be made explicitly non-cacheable end-to-end) — don't assume
 CloudFront caches them independently.
+
+## Lane anchor — dig_ecosystem#1680 (on.dig.net Rust coverage gate)
+
+WIP: add a cargo llvm-cov ≥80% line/branch/function gate for the pure Rust lib (domain.rs/lib.rs + testable watcher logic), scoped honestly (exclude the feature-gated Lambda bin glue), mirroring the status.dig.net scoped-coverage pattern. JS coverage gate already enforced (harden-on v0.5.2). Implementation follows.
