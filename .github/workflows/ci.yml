@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
-          components: rustfmt, clippy, llvm-tools-preview
+          components: rustfmt, clippy, llvm-tools-preview, llvm-tools-preview
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - run: cargo fmt --all --check
       # Lint the pure lib (+ its tests) and the AWS Lambda binaries (both bins are feature-gated
@@ -37,6 +37,17 @@ jobs:
       - run: cargo clippy --bin bootstrap --features aws -- -D warnings
       - run: cargo clippy --bin watcher --features aws -- -D warnings
       - run: cargo test --all-targets
+      # Coverage floor (§2.3): the resolver's real logic (src/domain.rs, src/lib.rs,
+      # src/watcher.rs) MUST stay ≥80% line coverage — a PR that drops below fails here.
+      # The two src/bin/** mains (bootstrap, watcher) are thin AWS-Lambda entrypoints gated
+      # behind the `aws` feature and exercised by deploy/integration, NOT unit tests — so they
+      # are excluded from the floor (same lib-only scoping discipline as status.dig.net).
+      # Install from crates.io rather than a third-party action: this workflow's policy is to pin
+      # every third-party action to a full commit SHA, and `cargo install --locked` needs nothing
+      # pinned. The llvm-tools-preview component (added above) supplies the llvm-cov backend.
+      - run: cargo install cargo-llvm-cov --locked
+      - name: coverage floor (lib logic ≥80% lines, src/bin excluded)
+        run: cargo llvm-cov --lib --ignore-filename-regex 'src/bin/' --fail-under-lines 80
       # Rust coverage gate (§2.3), mirroring the JS `js` job's ≥80% floor. Measures the pure
       # resolver LOGIC — src/lib.rs (subdomain/URN/render/config decisions) + src/domain.rs
       # (record shape + label/lifecycle rules) + src/watcher.rs (the AWS-free chain-change decision
