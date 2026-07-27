@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.3] - 2026-07-27
+
+### Testing
+- **ci:** Add a cargo llvm-cov ≥80% gate for the Rust lib (#1680)
+
 ## [0.5.2] - 2026-07-22
 
 ### Testing
