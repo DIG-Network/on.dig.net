@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.4] - 2026-07-30
+
+### Chores
+- **on.dig.net:** Drop 4 unserved legacy status pages (#268)
+
 ## [0.5.3] - 2026-07-27
 
 ### Testing
