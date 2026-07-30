@@ -354,7 +354,7 @@
 
   // ===============================================================================================
   // CONTENT MIME inference. SINGLE SOURCE OF TRUTH: apps/web/lib/embed-core.ts contentType() (tested);
-  // this map is mirrored verbatim here and in services/resolver/assets/sw.js — keep all three in sync.
+  // this map is mirrored verbatim here and in assets/sw.js — keep all three in sync.
   // ===============================================================================================
   function contentType(resourceKey) {
     var ext = (resourceKey.split(".").pop() || "").toLowerCase();
@@ -697,8 +697,8 @@
   // ===============================================================================================
   // TIER 1 — same-origin service worker (full power). Only reachable when the snippet is served from
   // the SAME origin as the page (e.g. the *.on.dig.net resolver, or a site self-hosting the SW). The
-  // SW script + dig-client assets must be served same-origin (the resolver wires this; see
-  // services/resolver). We register, wait for control, then fetch the entry through the SW (which
+  // SW script + dig-client assets must be served same-origin (the on.dig.net Lambda wires this).
+  // We register, wait for control, then fetch the entry through the SW (which
   // intercepts + decrypts everything thereafter, including future navigations).
   // ===============================================================================================
   async function runTier1(cfg) {

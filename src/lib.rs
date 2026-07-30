@@ -318,23 +318,26 @@ pub fn config_json_for(domain: Option<Domain>, now: u64) -> String {
     }
 }
 
-/// Regression guard for the "DIG Network" wordmark on the served *.on.dig.net status pages.
+/// Regression guard for the "DIG Network" wordmark on the served *.on.dig.net documents.
 ///
 /// THE BUG (recurring, user-reported): the word "Network" rendered the SAME COLOR AS THE BACKGROUND
 /// (invisible), because the wordmark parent uses `background-clip:text` + `color:transparent` to paint
 /// "DIG" with a gradient and the "Network" span was left to INHERIT that transparent fill. The fix is
 /// that "Network" (`.mark .net`) MUST carry its OWN explicit visible fill. These tests read the ACTUAL
 /// asset bytes the Lambda serves (via include_str!), so reintroducing the transparent inheritance fails.
+///
+/// Only `loader.html` (the Active shell) and `error.html` are actually served by the resolver today —
+/// the four non-active statuses (`available`/`pending`/`expired`/`revoked`) are conveyed via the
+/// `/__dig/config.json` `status` field and rendered client-side by the loader shell (#206b), so their
+/// old static HTML pages were dropped (#268), leaving `error.html` as the only page still using this
+/// `<span class="net">`-based markup. `loader.html` renders its wordmark as a two-line inline `<svg>`
+/// instead (an explicit white `NETWORK` text node, never an inherited transparent fill) and is guarded
+/// separately by `csp_tests::render_loader_maps_to_loader_csp_and_carries_branded_sentinels`, which
+/// asserts the gradient + the "DIG Network" label are present in the served bytes.
 #[cfg(test)]
 mod wordmark_tests {
-    // Each page renders `DIG<span class="net">&nbsp;Network</span>` and must give `.net` a visible fill.
-    const PAGES: &[(&str, &str)] = &[
-        ("available", include_str!("../assets/pages/available.html")),
-        ("pending", include_str!("../assets/pages/pending.html")),
-        ("expired", include_str!("../assets/pages/expired.html")),
-        ("revoked", include_str!("../assets/pages/revoked.html")),
-        ("error", include_str!("../assets/pages/error.html")),
-    ];
+    // The one remaining page still using the span-based wordmark markup.
+    const PAGES: &[(&str, &str)] = &[("error", include_str!("../assets/pages/error.html"))];
 
     #[test]
     fn network_span_is_present_and_visibly_colored() {

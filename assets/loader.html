@@ -153,10 +153,11 @@
     // Build-version global (CLAUDE.md §6.7) — same substituted value as the <meta app-version> tag
     // above and the .dig-version footer text below.
     window.__APP_VERSION__ = "%%APP_VERSION%%";
-    // Non-active status copy — mirrors services/resolver/assets/pages/{pending,expired,revoked,
-    // available}.html. On a non-active status (or a config fetch that fails/404s) we swap the
-    // branded card's message to the matching copy WITHOUT navigating away: the branded shell stays,
-    // only the message + optional CTA change. Keeps the "never blank" invariant for every state.
+    // Non-active status copy — the pending/expired/revoked/available messaging the old per-status
+    // static pages used to render server-side (#268 dropped those files). On a non-active status (or
+    // a config fetch that fails/404s) we swap the branded card's message to the matching copy WITHOUT
+    // navigating away: the branded shell stays, only the message + optional CTA change. Keeps the
+    // "never blank" invariant for every state.
     window.__digStatusCopy = {
       pending: {
         badge: "Pending",
