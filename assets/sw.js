@@ -1,4 +1,4 @@
-// services/resolver/assets/sw.js
+// on.dig.net/assets/sw.js
 //
 // Service worker for <subdomain>.on.dig.net pinned-URN resolver.
 // Intercepts same-origin GET requests, fetches ciphertext via the dig JSON-RPC,
@@ -104,7 +104,7 @@ const CONTENT_CACHE_MAX = 200;
 // TWO DISTINCT TRUST CONTEXTS (#206): this STORE-CONTENT sandbox is DELIBERATELY DIFFERENT from the
 // LOADER-SHELL CSP. The loader shell (loader.html — first-party inline branding + bootstrap + the
 // same-origin embed snippet, reaching only rpc.dig.net) is governed by the resolver Lambda's
-// LOADER_CSP (services/resolver/src/lib.rs), attached per-response, and stays tight. This STORE_CSP
+// LOADER_CSP (src/lib.rs), attached per-response, and stays tight. This STORE_CSP
 // governs the decrypted USER SITE — arbitrary, developer-authored web content — and must let it
 // behave like a site hosted on any normal static host (Netlify/Vercel/Pages).
 //
