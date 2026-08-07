@@ -1,0 +1,30 @@
+{
+  "$comment": "Provenance + integrity manifest for the vendored files in assets/. scripts/check-vendored-assets.mjs recomputes each sha256 from disk and fails CI on any mismatch (deterministic, offline tamper/edit gate). The scheduled .github/workflows/vendor-drift.yml separately re-checks dig-embed.js against hub's canonical source (comment-stripped) to catch upstream CODE drift. Re-vendor flow + --update usage: runbooks/deploy.md. Vendored-assets contract: SPEC.md.",
+  "assets": [
+    {
+      "path": "assets/dig-embed.js",
+      "kind": "hub-vendored",
+      "source_repo": "DIG-Network/hub.dig.net",
+      "source_path": "apps/web/public/embed/dig-embed.js",
+      "hub_ref": "f04aa79e48f12fc7a19c5d2c77c716918b3339dd",
+      "parity_note": "Byte-identical to the hub source modulo comment lines only (verified comment-stripped equal 2026-08-07). hub_ref is the hub commit last touching the source at vendor time.",
+      "sha256": "e02919d478f1ddcf555df938e53563f216cabbe0be6ec1a7a46315c3bbffad23"
+    },
+    {
+      "path": "assets/dig_client.js",
+      "kind": "release-artifact",
+      "source": "dig-client-wasm",
+      "version": "0.1.0",
+      "version_note": "wasm-bindgen JS glue from the dig-client-wasm crate (DIG-Network/dig-store crates/dig-client-wasm). No embedded version string in the artifact; tracked from the crate's Cargo.toml version at vendor time.",
+      "sha256": "5ebd83e5f9e90139760ea2dfbd50f1a28d136cb28f6c39187e12229ee1e86023"
+    },
+    {
+      "path": "assets/dig_client_bg.wasm",
+      "kind": "release-artifact",
+      "source": "dig-client-wasm",
+      "version": "0.1.0",
+      "version_note": "Compiled read-crypto wasm from the dig-client-wasm crate (DIG-Network/dig-store crates/dig-client-wasm), tracked from the crate's Cargo.toml version at vendor time.",
+      "sha256": "ff486be806f908a2a90780e499a04dbd34e10e3b97be0470cb9ee841a1e49e77"
+    }
+  ]
+}
