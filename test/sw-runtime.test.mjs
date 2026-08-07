@@ -393,6 +393,89 @@ test("serveUrn: chunk-length sum mismatch is rejected with a 404 (defense in dep
   assert.equal(response.status, 404);
 });
 
+// #2264 — pinned-root fail-closed. The merkle inclusion proof is the ONLY thing binding served
+// bytes to the PINNED generation root: the decrypt key derives from public URN fields, so a clean
+// decrypt does NOT prove authenticity. A pinned read whose proof fails (or throws) MUST 404 rather
+// than serve attacker-substituted bytes. An unpinned "latest" read has no pinned root to bind to
+// (the documented blind model) so verification stays advisory there and MUST NOT gate.
+function contentRoute(cipher, { proof }) {
+  return [
+    (u) => u.includes("/content/"),
+    () =>
+      new Response(cipher, {
+        status: 200,
+        headers: {
+          "x-dig-total-length": String(cipher.length),
+          "x-dig-inclusion-proof": proof,
+          "x-dig-chunk-lens": String(cipher.length),
+        },
+      }),
+  ];
+}
+
+test("serveUrn: pinned root + FAILED inclusion proof fails closed with a 404 (#2264)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: ROOT }); // ROOT is a pinned 64-hex generation root
+  const plain = "attacker-substituted but cleanly-decrypting bytes";
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode(plain));
+  stubFetch([wasmRoute, contentRoute(cipher, { proof: "bad-proof" })]); // verifyInclusion → false
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 404);
+});
+
+test("serveUrn: pinned root + THROWING inclusion proof fails closed with a 404 (#2264)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: ROOT });
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode("bytes"));
+  stubFetch([wasmRoute, contentRoute(cipher, { proof: "throw-proof" })]); // verifyInclusion throws
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 404);
+});
+
+test("serveUrn: pinned root + VALID inclusion proof serves 200 (#2264 — honest read)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: ROOT });
+  const plain = "honest pinned content";
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode(plain));
+  stubFetch([wasmRoute, contentRoute(cipher, { proof: "valid-proof" })]);
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-dig-verified"), "true");
+  assert.equal(await response.text(), plain);
+});
+
+test("serveUrn: UNPINNED 'latest' + failed proof STILL serves 200 (#2264 — blind model preserved)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: "latest" }); // unpinned: no pinned root to bind to
+  const plain = "latest-tracking content";
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode(plain));
+  // Unpinned reads go over JSON-RPC POST; verifyInclusion → false must NOT gate the serve.
+  stubFetch([
+    wasmRoute,
+    [
+      (u) => u === "https://rpc.dig.net/",
+      () =>
+        new Response(
+          JSON.stringify({
+            result: {
+              total_length: cipher.length,
+              offset: 0,
+              ciphertext: Buffer.from(cipher).toString("base64"),
+              inclusion_proof: "bad-proof",
+              chunk_lens: [cipher.length],
+              complete: true,
+            },
+          }),
+          { status: 200 }
+        ),
+    ],
+  ]);
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-dig-verified"), "false");
+  assert.equal(await response.text(), plain);
+});
+
 test("serveUrn: an invalid explicit DIG URN yields a 400", async () => {
   installSwGlobals(`https://${STORE}.on.dig.net/?store=${STORE}&root=${ROOT}`);
   stubFetch([wasmRoute]);

@@ -23,8 +23,13 @@ export function deriveKey(storeId, resourceKey, salt) {
   return `key:${storeId}:${resourceKey}:${salt || ""}`;
 }
 
-/** Fake inclusion check: "verified" iff the proof string is the fixed sentinel below. */
+/**
+ * Fake inclusion check: "verified" iff the proof string is the fixed sentinel below. The
+ * `throw-proof` sentinel makes it THROW, simulating a malformed proof the real wasm rejects by
+ * raising — exercising serveUrn's non-throwing try/catch around verifyInclusion (#2264).
+ */
 export function verifyInclusion(_ciphertext, proof, _root) {
+  if (proof === "throw-proof") throw new Error("malformed inclusion proof");
   return proof === "valid-proof";
 }
 

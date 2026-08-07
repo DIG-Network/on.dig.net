@@ -748,6 +748,17 @@ async function serveUrn(path, digUrl) {
     verified = false;
   }
 
+  // FAIL CLOSED (#2264, mirrors the in-page dig-embed.js readResource gate + the decrypt gate
+  // below): the merkle inclusion proof is the ONLY thing binding served bytes to the PINNED
+  // generation root — the decrypt key is derivable from public URN fields, so a clean decrypt does
+  // NOT prove authenticity. A pinned read's proof MUST verify; a false/absent proof means
+  // attacker-substituted bytes → 404. An unpinned "latest" read has no pinned root to bind to
+  // (blind model — see this file's rootIsPinned + the L627-628 note), so verification is advisory
+  // there and MUST NOT gate.
+  if (pinned && !verified) {
+    return { response: new Response("Not found", { status: 404 }) };
+  }
+
   // Derive the per-resource AES-256 key.
   const keyHex = deriveKey(storeId, resourceKey, salt || null);
 
