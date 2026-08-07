@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.7] - 2026-08-07
+
+### Bug Fixes
+- **sw:** Fail closed on merkle inclusion failure for pinned reads (#2264)
+
 ## [0.5.5] - 2026-08-06
 
 ### Chores
