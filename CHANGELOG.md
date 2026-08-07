@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.9] - 2026-08-07
+
+### CI
+- **assets:** Vendored-asset drift-guard vs hub canonical (#2263)
+
 ## [0.5.8] - 2026-08-07
 
 ### Bug Fixes
