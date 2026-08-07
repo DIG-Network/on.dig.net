@@ -89,6 +89,36 @@ are the shipped, byte-fixed read artifacts. To update: copy the new artifact byt
 run `cargo test` (the SRI/asset-regression tests must pass), commit, and deploy (which republishes to
 S3). The bytes MUST stay byte-identical to the canonical `dig-client-wasm` release.
 
+### Vendored-asset drift guard + the re-vendor flow (deliberate)
+
+`assets/vendor-manifest.json` records the provenance + SHA-256 of every vendored asset
+(`dig-embed.js` from hub.dig.net; `dig_client.js` + `dig_client_bg.wasm` from `dig-client-wasm`). Two
+guards keep the local copies from silently drifting from their canonical source (the staleness that
+made #2261 a live vuln):
+
+- **Offline build gate:** `node scripts/check-vendored-assets.mjs` (wired into `ci.yml`'s `js` job)
+  recomputes each asset's hash and fails on any mismatch.
+- **Scheduled upstream detector:** `.github/workflows/vendor-drift.yml` (daily) diffs the local
+  `dig-embed.js` against hub's canonical copy (comment-stripped) and opens a re-vendor issue on
+  drift. It needs a read-scoped `HUB_READ_TOKEN` secret (hub.dig.net is private); **without it the
+  job soft-skips** with a notice rather than failing — add the secret to enable the upstream check.
+
+**Re-vendoring (the ONLY sanctioned way to change a vendored file):**
+
+1. Copy the fresh upstream bytes into `assets/` (from hub for `dig-embed.js`, or the new
+   `dig-client-wasm` release for the wasm pair).
+2. Bless the new hashes into the manifest:
+   ```bash
+   # dig-embed.js re-vendor — also stamp the hub commit it came from:
+   node scripts/check-vendored-assets.mjs --update --hub-ref <hub main SHA>
+   # wasm-only re-vendor:
+   node scripts/check-vendored-assets.mjs --update
+   ```
+   For a wasm re-vendor, also hand-edit the `version` field(s) in `vendor-manifest.json` to the new
+   `dig-client-wasm` crate version.
+3. Run `cargo test` + `node --test test/vendor-map.test.mjs test/dig-embed.test.mjs` and confirm
+   `node scripts/check-vendored-assets.mjs` passes, then commit + PR + deploy (republishes to S3).
+
 ## Zero-downtime cutover of `*.on.dig.net` (moving the wildcard between distributions)
 
 CloudFront routes a request by its **`Host` header**, independent of which distribution's

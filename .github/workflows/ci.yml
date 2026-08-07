@@ -63,6 +63,13 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
+      # Deterministic OFFLINE integrity gate (#2263): recompute each vendored asset's sha256 and
+      # assert it matches assets/vendor-manifest.json, so a vendored file (dig-embed.js from hub,
+      # dig_client.js/.wasm from dig-client-wasm) can never silently drift/be edited without a
+      # provenance update — the staleness that made #2261 a live vuln. Upstream CODE drift is the
+      # separate scheduled job .github/workflows/vendor-drift.yml (this stays network-free).
+      - name: vendored-asset integrity gate (sha256 vs vendor-manifest.json)
+        run: node scripts/check-vendored-assets.mjs
       # No package.json / dependencies: the sw.js orchestration logic (range planner, parallel
       # fan-out, cache-key builders, decrypt-stream assembly, the RPC/GET fetch paths, and the full
       # serveUrn control flow, §205a/§205d/§205e) is tested with Node's built-in test runner + a
@@ -81,7 +88,7 @@ jobs:
           --test-coverage-lines=80
           --test-coverage-branches=80
           --test-coverage-functions=80
-          test/sw.test.mjs test/sw-runtime.test.mjs test/dig-embed.test.mjs
+          test/sw.test.mjs test/sw-runtime.test.mjs test/dig-embed.test.mjs test/vendor-map.test.mjs
 
   a11y:
     name: accessibility (axe WCAG 2.2 AA on the served documents)
