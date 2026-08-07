@@ -91,6 +91,12 @@
     if (root && !/^[0-9a-f]{64}$/.test(root)) return null;
     return { storeId: storeId, root: root || null, resourceKey: resourceKey, salt: salt };
   }
+  // A generation root is PINNED when it is a concrete 64-hex digest (vs the "latest" alias). Only a
+  // pinned read has a fixed root to bind served bytes to, so only a pinned read gates on the merkle
+  // inclusion proof (see readResource; sw.js rootIsPinned/blind-model note).
+  function rootIsPinned(root) {
+    return typeof root === "string" && /^[0-9a-f]{64}$/.test(root);
+  }
   function normalizePath(path) {
     var parts = String(path == null ? "" : path).split("/");
     var out = [];
@@ -482,17 +488,28 @@
     var fv = await fetchVerified(storeId, rk, root);
     var verified = false;
     try { verified = !!dig.verifyInclusion(fv.ciphertext, fv.proof, root); } catch (_) { verified = false; }
+    // FAIL CLOSED (mirrors sw.js serveUrn + the #2259 decrypt gate): the merkle inclusion proof is the
+    // ONLY thing binding served bytes to the PINNED generation root — the decrypt key is derivable from
+    // public URN fields, so a clean decrypt does NOT prove authenticity. A pinned read's proof MUST verify;
+    // a false/absent proof = attacker-substituted bytes. An unpinned "latest" read has no pinned root to
+    // bind to (blind model), so verification is advisory there and MUST NOT gate.
+    if (rootIsPinned(root) && verified !== true) {
+      throw new Error("DIG content failed merkle inclusion verification (fail closed)");
+    }
     var keyHex = dig.deriveKey(storeId, resourceKey, salt || undefined);
-    var bytes, decrypted = true;
+    var bytes;
     try {
       bytes = decryptChunks(dig, keyHex, fv.ciphertext, fv.chunkLens);
     } catch (_) {
-      bytes = fv.ciphertext;
-      decrypted = false;
+      // FAIL CLOSED (mirrors the Tier-1 SW's 404, sw.js serveUrn): a decrypt/AEAD-tag failure means the
+      // bytes are a decoy / wrong-key / wrong-salt response — they are UNVERIFIED and MUST NEVER be
+      // surfaced as content. Throw so every caller's error path handles it (branded overlay / 502 /
+      // error event); never hand back raw ciphertext as if it were the resource.
+      throw new Error("DIG content could not be decrypted (fail closed)");
     }
     if (CACHE.size >= CACHE_MAX) CACHE.delete(CACHE.keys().next().value);
     CACHE.set(cacheKey, bytes);
-    return { bytes: bytes, verified: verified, decrypted: decrypted, resourceKey: resourceKey, cache: "miss" };
+    return { bytes: bytes, verified: verified, decrypted: true, resourceKey: resourceKey, cache: "miss" };
   }
 
   // ===============================================================================================
