@@ -81,7 +81,7 @@ jobs:
           --test-coverage-lines=80
           --test-coverage-branches=80
           --test-coverage-functions=80
-          test/sw.test.mjs test/sw-runtime.test.mjs
+          test/sw.test.mjs test/sw-runtime.test.mjs test/dig-embed.test.mjs
 
   a11y:
     name: accessibility (axe WCAG 2.2 AA on the served documents)
