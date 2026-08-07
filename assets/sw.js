@@ -52,7 +52,29 @@ const DIG_CLIENT_WASM_SHA256 = "ff486be806f908a2a90780e499a04dbd34e10e3b97be0470
 
 // ---- Lifecycle ---------------------------------------------------------------
 self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("activate", (e) =>
+  e.waitUntil(Promise.all([self.clients.claim(), purgeStaleContentCaches()]))
+);
+
+/**
+ * On activation, DELETE every stale DIG content cache — any `dig-content-*` cache that is not the
+ * current CONTENT_CACHE_NAME. Entries written by a PRIOR SW predate the pinned-root fail-closed gate
+ * (#2264) and may be pinned-but-UNVERIFIED, so they MUST be discarded on upgrade rather than served
+ * by a later persistent-cache hit. Best-effort + non-throwing (private mode / quota must not block
+ * activation); leaves the wasm cache and any unrelated caches untouched (prefix-scoped).
+ */
+async function purgeStaleContentCaches() {
+  try {
+    const names = await caches.keys();
+    await Promise.all(
+      names
+        .filter((name) => name.startsWith(CONTENT_CACHE_PREFIX) && name !== CONTENT_CACHE_NAME)
+        .map((name) => caches.delete(name))
+    );
+  } catch {
+    // Cache Storage unavailable (private mode / quota) — nothing to purge, nothing to fail on.
+  }
+}
 
 // ---- Module-level state ------------------------------------------------------
 // CFG is fetched lazily on first intercepted request.
@@ -89,7 +111,15 @@ const MAX_PARALLEL_RANGES = 6;
 // Versioned suffixes so a future incompatible change to what's stored can start a fresh cache
 // without needing manual migration/cleanup logic.
 const WASM_CACHE_NAME = "dig-wasm-v1";
-const CONTENT_CACHE_NAME = "dig-content-v1";
+// Bumped v1 → v2 with the pinned-root fail-closed gate (#2264): the PRIOR released SW (commit
+// 3f78d75, #1) persisted pinned content WITHOUT that gate, so a returning user's `dig-content-v1`
+// may hold pinned-but-UNVERIFIED bytes. A new cache name means this SW never READS those pre-gate
+// entries, and `activate` PURGES them (see purgeStaleContentCaches) — otherwise a persistent-cache
+// hit would serve stale unverified bytes straight past the gate below.
+const CONTENT_CACHE_NAME = "dig-content-v2";
+// All content caches share this prefix; the WASM cache does NOT — so a prefix match cleanly targets
+// only stale content-cache versions on upgrade, never the wasm or unrelated caches.
+const CONTENT_CACHE_PREFIX = "dig-content-";
 // Soft cap on the number of persisted decrypted-content entries; oldest-first eviction on overflow
 // (mirrors the in-memory CACHE_MAX policy below) so a long-lived origin can't grow this unbounded.
 const CONTENT_CACHE_MAX = 200;
@@ -857,6 +887,7 @@ export {
   fetchVerifiedPost,
   matchContentCache,
   putContentCache,
+  purgeStaleContentCaches,
   serveUrn,
   __resetStateForTest,
 };

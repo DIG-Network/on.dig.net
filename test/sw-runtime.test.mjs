@@ -288,6 +288,27 @@ test("matchContentCache / putContentCache round-trip; unavailable storage yields
   await sw.putContentCache(STORE, ROOT, "index.html", bytes, {}); // must not throw
 });
 
+test("purgeStaleContentCaches: an upgrade drops the pre-gate dig-content-v1 cache (#2264)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  // Simulate a returning user: a PRIOR SW (no fail-closed gate) persisted pinned bytes in v1, and
+  // the current SW's own v2 cache + the wasm cache also exist. Seed all three directly.
+  const legacy = await globalThis.caches.open("dig-content-v1");
+  await legacy.put(sw.contentCacheKey(STORE, ROOT, "index.html"), new Response(enc.encode("pre-gate unverified bytes")));
+  const current = await globalThis.caches.open("dig-content-v2");
+  await current.put(sw.contentCacheKey(STORE, ROOT, "index.html"), new Response(enc.encode("post-gate bytes")));
+  await (await globalThis.caches.open("dig-wasm-v1")).put(new Request("https://x/w"), new Response("wasm"));
+
+  await sw.purgeStaleContentCaches();
+
+  const names = await globalThis.caches.keys();
+  assert.ok(!names.includes("dig-content-v1"), "the pre-gate content cache must be deleted on upgrade");
+  assert.ok(names.includes("dig-content-v2"), "the current content cache must survive");
+  assert.ok(names.includes("dig-wasm-v1"), "the wasm cache must NOT be purged");
+  // And the persistent-cache read path can no longer serve the legacy unverified entry.
+  const hit = await sw.matchContentCache(STORE, ROOT, "index.html");
+  assert.equal(dec.decode(hit), "post-gate bytes");
+});
+
 test("serveUrn: pinned GET → decrypts, verifies, persists, then serves from cache on repeat", async () => {
   installSwGlobals(`https://${STORE}.on.dig.net/?store=${STORE}&root=${ROOT}`);
   const plain = "<!doctype html><title>hi</title>";

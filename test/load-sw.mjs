@@ -107,6 +107,14 @@ export function makeFakeCacheStorage({ failOpen = false } = {}) {
         },
       };
     },
+    // CacheStorage-level introspection (distinct from a Cache's own keys()/delete()): enumerate the
+    // named caches + delete one by name — used by sw.js's activate-time stale-cache purge (#2264).
+    async keys() {
+      return [...stores.keys()];
+    },
+    async delete(name) {
+      return stores.delete(name);
+    },
   };
 }
 
