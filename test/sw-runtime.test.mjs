@@ -288,6 +288,27 @@ test("matchContentCache / putContentCache round-trip; unavailable storage yields
   await sw.putContentCache(STORE, ROOT, "index.html", bytes, {}); // must not throw
 });
 
+test("purgeStaleContentCaches: an upgrade drops the pre-gate dig-content-v1 cache (#2264)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  // Simulate a returning user: a PRIOR SW (no fail-closed gate) persisted pinned bytes in v1, and
+  // the current SW's own v2 cache + the wasm cache also exist. Seed all three directly.
+  const legacy = await globalThis.caches.open("dig-content-v1");
+  await legacy.put(sw.contentCacheKey(STORE, ROOT, "index.html"), new Response(enc.encode("pre-gate unverified bytes")));
+  const current = await globalThis.caches.open("dig-content-v2");
+  await current.put(sw.contentCacheKey(STORE, ROOT, "index.html"), new Response(enc.encode("post-gate bytes")));
+  await (await globalThis.caches.open("dig-wasm-v1")).put(new Request("https://x/w"), new Response("wasm"));
+
+  await sw.purgeStaleContentCaches();
+
+  const names = await globalThis.caches.keys();
+  assert.ok(!names.includes("dig-content-v1"), "the pre-gate content cache must be deleted on upgrade");
+  assert.ok(names.includes("dig-content-v2"), "the current content cache must survive");
+  assert.ok(names.includes("dig-wasm-v1"), "the wasm cache must NOT be purged");
+  // And the persistent-cache read path can no longer serve the legacy unverified entry.
+  const hit = await sw.matchContentCache(STORE, ROOT, "index.html");
+  assert.equal(dec.decode(hit), "post-gate bytes");
+});
+
 test("serveUrn: pinned GET → decrypts, verifies, persists, then serves from cache on repeat", async () => {
   installSwGlobals(`https://${STORE}.on.dig.net/?store=${STORE}&root=${ROOT}`);
   const plain = "<!doctype html><title>hi</title>";
@@ -391,6 +412,89 @@ test("serveUrn: chunk-length sum mismatch is rejected with a 404 (defense in dep
   ]);
   const { response } = await sw.serveUrn("/index.html", null);
   assert.equal(response.status, 404);
+});
+
+// #2264 — pinned-root fail-closed. The merkle inclusion proof is the ONLY thing binding served
+// bytes to the PINNED generation root: the decrypt key derives from public URN fields, so a clean
+// decrypt does NOT prove authenticity. A pinned read whose proof fails (or throws) MUST 404 rather
+// than serve attacker-substituted bytes. An unpinned "latest" read has no pinned root to bind to
+// (the documented blind model) so verification stays advisory there and MUST NOT gate.
+function contentRoute(cipher, { proof }) {
+  return [
+    (u) => u.includes("/content/"),
+    () =>
+      new Response(cipher, {
+        status: 200,
+        headers: {
+          "x-dig-total-length": String(cipher.length),
+          "x-dig-inclusion-proof": proof,
+          "x-dig-chunk-lens": String(cipher.length),
+        },
+      }),
+  ];
+}
+
+test("serveUrn: pinned root + FAILED inclusion proof fails closed with a 404 (#2264)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: ROOT }); // ROOT is a pinned 64-hex generation root
+  const plain = "attacker-substituted but cleanly-decrypting bytes";
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode(plain));
+  stubFetch([wasmRoute, contentRoute(cipher, { proof: "bad-proof" })]); // verifyInclusion → false
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 404);
+});
+
+test("serveUrn: pinned root + THROWING inclusion proof fails closed with a 404 (#2264)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: ROOT });
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode("bytes"));
+  stubFetch([wasmRoute, contentRoute(cipher, { proof: "throw-proof" })]); // verifyInclusion throws
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 404);
+});
+
+test("serveUrn: pinned root + VALID inclusion proof serves 200 (#2264 — honest read)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: ROOT });
+  const plain = "honest pinned content";
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode(plain));
+  stubFetch([wasmRoute, contentRoute(cipher, { proof: "valid-proof" })]);
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-dig-verified"), "true");
+  assert.equal(await response.text(), plain);
+});
+
+test("serveUrn: UNPINNED 'latest' + failed proof STILL serves 200 (#2264 — blind model preserved)", async () => {
+  installSwGlobals(`https://${STORE}.on.dig.net/`);
+  await primeCfg(sw, { root: "latest" }); // unpinned: no pinned root to bind to
+  const plain = "latest-tracking content";
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode(plain));
+  // Unpinned reads go over JSON-RPC POST; verifyInclusion → false must NOT gate the serve.
+  stubFetch([
+    wasmRoute,
+    [
+      (u) => u === "https://rpc.dig.net/",
+      () =>
+        new Response(
+          JSON.stringify({
+            result: {
+              total_length: cipher.length,
+              offset: 0,
+              ciphertext: Buffer.from(cipher).toString("base64"),
+              inclusion_proof: "bad-proof",
+              chunk_lens: [cipher.length],
+              complete: true,
+            },
+          }),
+          { status: 200 }
+        ),
+    ],
+  ]);
+  const { response } = await sw.serveUrn("/index.html", null);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-dig-verified"), "false");
+  assert.equal(await response.text(), plain);
 });
 
 test("serveUrn: an invalid explicit DIG URN yields a 400", async () => {
