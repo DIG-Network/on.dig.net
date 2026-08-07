@@ -252,6 +252,39 @@ This fixes the EXTERNAL contract — routes, status codes, response headers, the
 semantics — not `sw.js`'s internal fetch/decrypt/caching strategy, which MAY evolve (§9) as long as
 every route keeps serving identically and no security invariant is weakened.
 
+### 8.1 Vendored-asset provenance + integrity (drift guard)
+
+Some files in `assets/` are NOT authored here — they are vendored, and MUST stay in sync with their
+upstream source. `assets/vendor-manifest.json` is the authoritative provenance + integrity record;
+it lists each vendored asset with its `sha256` and its origin:
+
+- `assets/dig-embed.js` — **vendored from hub.dig.net** (`apps/web/public/embed/dig-embed.js` is
+  canonical). Byte-identical modulo comment lines; `hub_ref` records the hub commit it was vendored
+  from.
+- `assets/dig_client.js`, `assets/dig_client_bg.wasm` — **`dig-client-wasm` release artifacts** (the
+  read-crypto WASM + wasm-bindgen JS glue); `version` records the crate version.
+
+`assets/sw.js` is on.dig.net's OWN resolver Service Worker (extracted from hub, but maintained here);
+it is NOT a vendored asset and is not listed in the manifest.
+
+Two guards enforce this contract:
+
+1. **Offline build gate (deterministic, in `ci.yml`):** `scripts/check-vendored-assets.mjs`
+   recomputes each manifest asset's SHA-256 from disk and FAILS the build on any mismatch — a vendored
+   file cannot change without a matching provenance update. This is what makes silent local drift (the
+   staleness class that turned #2261 into a live vuln) impossible to merge unnoticed.
+2. **Scheduled upstream drift detector (network, `.github/workflows/vendor-drift.yml`):** daily, it
+   fetches hub's canonical `dig-embed.js` and compares it to the local copy with comments stripped from
+   both — catching real CODE drift (e.g. hub adding a security gate the vendored copy lacks) while
+   ignoring the known comment-only deltas. On drift it opens a re-vendor issue. Kept out of `ci.yml`
+   so the PR build stays offline + deterministic.
+
+Additionally, the extension→MIME `contentType()` map is mirrored in BOTH `assets/dig-embed.js` and
+`assets/sw.js` (a module worker cannot import hub's `embed-core.ts`); `test/vendor-map.test.mjs`
+asserts the two copies stay byte-identical.
+
+Re-vendoring is a deliberate, documented step — see `runbooks/deploy.md`.
+
 ## 9. Loader performance: parallel range fetch, streaming decrypt, persistent caching
 
 `sw.js` fetches, verifies, and decrypts a resource as follows (the network/decrypt/caching

@@ -1,0 +1,94 @@
+name: vendor-drift
+
+# Scheduled UPSTREAM drift detector for assets/dig-embed.js — the one file on.dig.net vendors from
+# hub.dig.net (apps/web/public/embed/dig-embed.js is canonical). It fetches hub's current source and
+# compares it to the local copy with COMMENTS STRIPPED FROM BOTH, so it ignores the known comment-only
+# deltas but flags real CODE drift — e.g. hub adding a fail-closed security gate that on.dig.net's copy
+# lacks, the #2261 scenario. On drift it fails the run AND opens a re-vendor tracking issue.
+#
+# This is DELIBERATELY OUT of ci.yml: ci.yml is offline + deterministic (that path is guarded by the
+# sha256 build gate, scripts/check-vendored-assets.mjs). This job needs the network + a token that can
+# read the PRIVATE hub.dig.net repo. Without such a token it SOFT-SKIPS (never a hard CI failure).
+#
+# Third-party actions are pinned to a full commit SHA (a mutable tag could be re-pointed at malware).
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vendor-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: hub dig-embed.js drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Fetch hub's canonical source. hub.dig.net is PRIVATE, so this needs a read-scoped token —
+      # HUB_READ_TOKEN (a PAT/fine-grained token with `contents: read` on DIG-Network/hub.dig.net; the
+      # org RELEASE_TOKEN pattern works). If unset, soft-skip: emit a notice and pass, never hard-fail.
+      - name: fetch hub canonical dig-embed.js
+        id: fetch
+        env:
+          HUB_READ_TOKEN: ${{ secrets.HUB_READ_TOKEN }}
+        run: |
+          if [ -z "$HUB_READ_TOKEN" ]; then
+            echo "::notice title=vendor-drift skipped::no HUB_READ_TOKEN configured — cannot read the private hub.dig.net repo; skipping upstream drift check. Add a read-scoped HUB_READ_TOKEN secret to enable it."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # gh API raw content endpoint reaches a private repo with the token; -f raw media type.
+          curl -sfSL \
+            -H "Authorization: Bearer $HUB_READ_TOKEN" \
+            -H "Accept: application/vnd.github.raw+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/DIG-Network/hub.dig.net/contents/apps/web/public/embed/dig-embed.js?ref=main" \
+            -o hub-dig-embed.js
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+      # Compare code-only (comments + trailing whitespace stripped from BOTH). Zero-dep Node, inline.
+      - name: compare (comment-stripped) local vs hub
+        if: steps.fetch.outputs.skipped != 'true'
+        id: compare
+        run: |
+          node --input-type=module <<'EOF'
+          import { readFileSync } from "node:fs";
+          // Strip /* */ block + // line comments and trailing whitespace, drop blank lines. Naive by
+          // design: any residual mangling (e.g. "//" inside a string) is applied identically to both
+          // sides, so genuinely-identical code still compares equal; only real code drift diverges.
+          const strip = (s) =>
+            s
+              .replace(/\/\*[\s\S]*?\*\//g, "")
+              .split(/\r?\n/)
+              .map((l) => l.replace(/\/\/.*$/, "").replace(/\s+$/, ""))
+              .filter((l) => l.trim() !== "")
+              .join("\n");
+          const local = strip(readFileSync("assets/dig-embed.js", "utf8"));
+          const hub = strip(readFileSync("hub-dig-embed.js", "utf8"));
+          if (local === hub) {
+            console.log("vendor-drift: OK — assets/dig-embed.js matches hub (comment-stripped).");
+            process.exit(0);
+          }
+          console.error("vendor-drift: DRIFT — assets/dig-embed.js differs from hub's canonical source (comment-stripped).");
+          process.exit(1);
+          EOF
+
+      # On real drift, open (or leave a note pointing at) a re-vendor tracking issue, then fail the run.
+      - name: open re-vendor issue on drift
+        if: failure() && steps.fetch.outputs.skipped != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "re-vendor dig-embed.js from hub (drift detected)" \
+            --body "The scheduled vendor-drift check found that \`assets/dig-embed.js\` has drifted (code, comment-stripped) from hub's canonical \`apps/web/public/embed/dig-embed.js\`. Re-vendor: copy the fresh hub bytes into \`assets/dig-embed.js\`, run \`node scripts/check-vendored-assets.mjs --update --hub-ref <hub main SHA>\`, verify tests, and open a PR. See runbooks/deploy.md and DIG-Network/dig_ecosystem#2263." \
+            || echo "::warning::could not open drift issue (gh issue create failed) — drift still detected; see the failed compare step."
