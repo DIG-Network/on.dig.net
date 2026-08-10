@@ -76,3 +76,21 @@ export function loadReadResource(deps) {
   );
   return factory(deps);
 }
+
+/**
+ * Extract the REAL `rootIsPinned` predicate from assets/dig-embed.js and return it as a callable, so
+ * the #2313 fail-closed sentinel semantics (a non-canonical pinned root — uppercase/`0x`/whitespace —
+ * still reads as PINNED and thus gated) can be pinned directly. `rootIsPinned` is authored
+ * self-contained (it does its own trim/lowercase/strip-0x), so no collaborators need injecting.
+ */
+export function loadRootIsPinned() {
+  const src = readFileSync(embedPath, "utf8");
+  const rootIsPinnedSrc = extractFunction(src, "rootIsPinned");
+  if (!rootIsPinnedSrc) {
+    throw new Error(
+      "dig-embed.js structure changed — rootIsPinned not found; update load-dig-embed.mjs"
+    );
+  }
+  const factory = new Function(`"use strict"; ${rootIsPinnedSrc} return rootIsPinned;`);
+  return factory();
+}

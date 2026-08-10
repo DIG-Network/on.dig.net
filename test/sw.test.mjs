@@ -167,14 +167,68 @@ test("buildDecryptStream", async (t) => {
   });
 });
 
+// #2313 — rootIsPinned is a fail-CLOSED sentinel allowlist: UNPINNED (not gated) iff, after
+// trim + lowercase + strip-0x, the value is "" or "latest"; EVERY other value — including a
+// malformed one ("too short" / "not hex") — is PINNED, so the merkle-inclusion gate fires. This is
+// the ONLY safe polarity: a value that is not the mutable "latest" sentinel MUST be bound to a proof.
+// Matches assets/dig-embed.js at the same strength and dig-sdk ac38aa95 / dig-node resolve_capsule_root.
 test("rootIsPinned", async () => {
   const { rootIsPinned } = await loadSw();
   assert.equal(rootIsPinned("a".repeat(64)), true);
   assert.equal(rootIsPinned("A".repeat(64)), true); // hex is case-insensitive
   assert.equal(rootIsPinned("latest"), false);
   assert.equal(rootIsPinned(null), false);
-  assert.equal(rootIsPinned("a".repeat(63)), false); // too short
-  assert.equal(rootIsPinned("g".repeat(64)), false); // not hex
+  // Fail closed: a non-"latest", non-empty value is PINNED even when malformed — never silently ungated.
+  assert.equal(rootIsPinned("a".repeat(63)), true); // "too short" is still gated (fail closed)
+  assert.equal(rootIsPinned("g".repeat(64)), true); // "not hex" is still gated (fail closed)
+});
+
+// The non-canonical + sentinel coverage shared with dig-embed's predicate (both MUST match strength).
+const SW_CANONICAL_ROOT = "b".repeat(64);
+const SW_NON_CANONICAL_PINNED = {
+  uppercase: "B".repeat(64),
+  "mixed-case": "aB".repeat(32),
+  "0x-prefixed": "0x" + "b".repeat(64),
+  "0X-prefixed": "0X" + "b".repeat(64),
+  "leading whitespace": " " + SW_CANONICAL_ROOT,
+  "trailing whitespace": SW_CANONICAL_ROOT + " ",
+  "surrounding whitespace": " " + SW_CANONICAL_ROOT + " ",
+  "trailing newline": SW_CANONICAL_ROOT + "\n",
+  "trailing crlf": SW_CANONICAL_ROOT + "\r\n",
+  "tab-padded": "\t" + SW_CANONICAL_ROOT + "\t",
+  "0x + uppercase + whitespace": "  0X" + "B".repeat(64) + "\r\n",
+};
+const SW_UNPINNED_SENTINELS = {
+  "empty string": "",
+  latest: "latest",
+  "latest uppercase": "LATEST",
+  "latest mixed-case": "LaTeSt",
+  "latest surrounded by whitespace": "  latest  ",
+  "latest trailing newline": "latest\n",
+  "latest with tabs": "\tlatest\t",
+};
+
+test("sw rootIsPinned: non-canonical pinned roots STILL gate (fail closed)", async () => {
+  const { rootIsPinned } = await loadSw();
+  assert.equal(rootIsPinned(SW_CANONICAL_ROOT), true, "the canonical pinned root gates");
+  for (const [name, root] of Object.entries(SW_NON_CANONICAL_PINNED)) {
+    assert.equal(
+      rootIsPinned(root),
+      true,
+      `non-canonical pinned root (${name}) must read as PINNED → the merkle gate MUST fire`
+    );
+  }
+});
+
+test("sw rootIsPinned: sentinel set is EXACTLY {'', 'latest'} (widening breaks this)", async () => {
+  const { rootIsPinned } = await loadSw();
+  for (const [name, root] of Object.entries(SW_UNPINNED_SENTINELS)) {
+    assert.equal(rootIsPinned(root), false, `sentinel '${name}' must be UNPINNED (not gated)`);
+  }
+  assert.equal(rootIsPinned(null), false, "null root is unpinned");
+  assert.equal(rootIsPinned(undefined), false, "undefined root is unpinned");
+  assert.equal(rootIsPinned("abc"), true, "a malformed non-'latest' root must be gated");
+  assert.equal(rootIsPinned(SW_CANONICAL_ROOT), true, "a normal hex root is pinned");
 });
 
 test("parseChunkLensHeader", async () => {
