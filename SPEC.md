@@ -325,6 +325,16 @@ digstore `SPEC.md`):
   model exists to prevent. Persistence is best-effort (a private-mode/quota failure never blocks
   serving content already handed to the page) and happens AFTER the response has already been sent
   (via `event.waitUntil`), so it never delays the visible response.
+- **Pinned-root predicate (fail closed).** A generation root MUST be canonicalized ONCE at entry —
+  `trim` + lowercase + strip a leading `0x` — so the pinned predicate, the RPC `root` parameter, the
+  merkle `verifyInclusion` call, and every cache key see one form. A read is UNPINNED (the mutable
+  "latest" alias) if and only if the canonical root is empty or the literal `latest`; EVERY other
+  value — including a malformed or non-canonical one — is PINNED and MUST gate on the merkle
+  inclusion proof (a failed/absent proof means attacker-substituted bytes and MUST throw, never
+  render). This polarity fails CLOSED: a non-canonical pinned root can never be silently downgraded
+  to an ungated "latest" read. Both deployed implementations (`assets/dig-embed.js` Tier-2 in-page,
+  `assets/sw.js` Tier-1 service worker) hold this identically, matching the dig-sdk / dig-node
+  `resolve_capsule_root` sentinel semantics.
 
 ## 10. Chain-change watcher (proactive edge invalidation)
 

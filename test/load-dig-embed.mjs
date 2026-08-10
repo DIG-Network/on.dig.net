@@ -62,6 +62,11 @@ export function loadReadResource(deps) {
   const rootIsPinnedSrc =
     extractFunction(src, "rootIsPinned") ||
     "function rootIsPinned() { return false; }";
+  // #2313: readResource canonicalizes its root at entry — inject the real helper (identity fallback
+  // for a pre-fix source that has no such helper yet).
+  const canonicalizeRootSrc =
+    extractFunction(src, "canonicalizeRoot") ||
+    "function canonicalizeRoot(root) { return root; }";
 
   const factory = new Function(
     "deps",
@@ -69,6 +74,7 @@ export function loadReadResource(deps) {
      const { loadDigClient, fetchVerified } = deps;
      const CACHE = deps.CACHE || new Map();
      const CACHE_MAX = deps.CACHE_MAX || 100;
+     ${canonicalizeRootSrc}
      ${rootIsPinnedSrc}
      ${decryptChunksSrc}
      ${readResourceSrc}

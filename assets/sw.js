@@ -350,11 +350,24 @@ async function rpcCall(method, params) {
   return j ? j.result : null;
 }
 
-/** Whether `root` is a concrete, PINNED generation root (a 64-hex string) — the only reads that are
- *  immutable + edge-cacheable. A rootless / "latest" read is mutable and MUST NOT use the cache path.
- */
+/** Canonical form of a generation root: trimmed, lowercased, `0x`-stripped. Applied ONCE where a
+ *  root ENTERS serveUrn so the pinned predicate, the RPC `root` param, and the cache keys all see ONE
+ *  form. Returns null for null/undefined (the mutable "latest" read). */
+function canonicalizeRoot(root) {
+  if (root == null) return null;
+  return String(root).trim().toLowerCase().replace(/^0x/, "");
+}
+
+/** Whether `root` is a concrete, PINNED generation root — the only reads that are immutable +
+ *  edge-cacheable. UNPINNED (mutable "latest") iff, after canonicalization, it is empty or the
+ *  "latest" alias; EVERY other value — including a malformed one — is PINNED and MUST gate on the
+ *  merkle inclusion proof. Fail CLOSED (#2313): a non-canonical/malformed root is GATED, never
+ *  silently served. Matches assets/dig-embed.js at the same strength (dig-sdk / dig-node semantics).
+ *  The trim/lowercase/strip-0x is repeated here defensively in case a caller forgot to canonicalize. */
 function rootIsPinned(root) {
-  return typeof root === "string" && /^[0-9a-f]{64}$/i.test(root);
+  if (typeof root !== "string") return false;
+  const r = root.trim().toLowerCase().replace(/^0x/, "");
+  return r !== "" && r !== "latest";
 }
 
 /** Parse the comma-separated `X-Dig-Chunk-Lens` header value into a number[] (empty ⇒ null). */
@@ -748,6 +761,11 @@ async function serveUrn(path, digUrl) {
     ({ storeId, root, resourceKey, salt } = urnForPath(path));
   }
 
+  // #2313 — canonicalize the root ONCE at entry (trim/lowercase/strip-0x) so the pinned predicate,
+  // the RPC `root` param, verifyInclusion, and every cache key downstream see ONE canonical form. A
+  // non-canonical rendering can therefore never slip past rootIsPinned as an unpinned "latest" read.
+  root = canonicalizeRoot(root) || "latest";
+
   const cacheKey = storeId + ":" + root + "/" + resourceKey;
   const memHit = CACHE.get(cacheKey);
   if (memHit) {
@@ -872,6 +890,7 @@ export {
   wasmCacheKey,
   contentCacheKey,
   rootIsPinned,
+  canonicalizeRoot,
   parseChunkLensHeader,
   parseDigUrn,
   contentType,

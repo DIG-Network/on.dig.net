@@ -86,16 +86,29 @@
     resourceKey = stripQueryHash(resourceKey).replace(/^\/+/, "") || "index.html";
     var colon = head.indexOf(":");
     var storeId = (colon === -1 ? head : head.slice(0, colon)).toLowerCase();
-    var root = colon === -1 ? null : head.slice(colon + 1).toLowerCase();
+    var root = colon === -1 ? null : canonicalizeRoot(head.slice(colon + 1));
     if (!/^[0-9a-f]{64}$/.test(storeId)) return null;
     if (root && !/^[0-9a-f]{64}$/.test(root)) return null;
     return { storeId: storeId, root: root || null, resourceKey: resourceKey, salt: salt };
   }
-  // A generation root is PINNED when it is a concrete 64-hex digest (vs the "latest" alias). Only a
-  // pinned read has a fixed root to bind served bytes to, so only a pinned read gates on the merkle
-  // inclusion proof (see readResource; sw.js rootIsPinned/blind-model note).
+  // Canonical form of a generation root: trimmed, lowercased, `0x`-stripped. Applied ONCE where a
+  // root ENTERS (URN parse, cfg) so the pinned predicate, the RPC `root` param, and verifyInclusion
+  // all see ONE form. Returns null for null/undefined (the mutable "latest" read).
+  function canonicalizeRoot(root) {
+    if (root == null) return null;
+    return String(root).trim().toLowerCase().replace(/^0x/, "");
+  }
+  // A generation root is UNPINNED (mutable "latest") iff, after canonicalization, it is empty or the
+  // "latest" alias; EVERY other value — including a malformed one — is PINNED. Only a pinned read has
+  // a fixed root to bind served bytes to, so only a pinned read gates on the merkle inclusion proof
+  // (see readResource). This is fail CLOSED (#2313): a non-canonical/malformed root is GATED, never
+  // silently rendered. Matches assets/sw.js at the same strength (dig-sdk / dig-node semantics). The
+  // trim/lowercase/strip-0x is repeated here defensively so the predicate is correct even if a caller
+  // forgot to canonicalize.
   function rootIsPinned(root) {
-    return typeof root === "string" && /^[0-9a-f]{64}$/.test(root);
+    if (typeof root !== "string") return false;
+    var r = root.trim().toLowerCase().replace(/^0x/, "");
+    return r !== "" && r !== "latest";
   }
   function normalizePath(path) {
     var parts = String(path == null ? "" : path).split("/");
@@ -477,7 +490,7 @@
 
   // Fetch + decrypt one resolved resource. Returns { bytes, verified, decrypted, resourceKey }.
   async function readResource(refObj) {
-    var storeId = refObj.storeId, root = refObj.root || "latest",
+    var storeId = refObj.storeId, root = canonicalizeRoot(refObj.root) || "latest",
       resourceKey = refObj.resourceKey, salt = refObj.salt || null;
     var cacheKey = storeId + ":" + root + "/" + resourceKey;
     if (CACHE.has(cacheKey)) {
