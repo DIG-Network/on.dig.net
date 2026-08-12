@@ -22,3 +22,6 @@ crash.log
 tests/a11y/node_modules/
 tests/a11y/test-results/
 tests/a11y/playwright-report/
+
+# Dev-only test deps (see package.json) — installed in CI with `npm ci`.
+node_modules/

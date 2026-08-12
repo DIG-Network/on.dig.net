@@ -66,24 +66,61 @@
   function stripQueryHash(p) {
     return String(p == null ? "" : p).split("#")[0].split("?")[0];
   }
+  // --- DIG URN parsing ---------------------------------------------------------------------------
+  // The grammar is normative in the SUPERPROJECT: SYSTEM.md § "DIG URN grammar (normative,
+  // cross-repo)". It is deliberately NOT restated here — a restated rule is a rule free to drift,
+  // and that is how the ecosystem's parsers came to disagree. Agreement is VERIFIED against the
+  // shared conformance table shipped in @dignetwork/dig-sdk (test/urn-conformance.test.mjs), never
+  // asserted in a comment.
+  //
+  // The one thing worth saying locally is why the query handling looks unusual: `?` is a legal
+  // resource-key character, and the resource key is a retrieval-key input. Splitting at every `?`
+  // truncates keys that real published content is stored under, so the query is split off only when
+  // the tail it introduces carries a boundary `salt=` parameter.
+  var SALT_PARAM = "salt=";
+  var SALT_AFTER_AMP = "&salt=";
+  // A boundary `salt=` is one at the start of the tail or immediately after an `&`; the value is the
+  // leading hex run, and the first boundary occurrence carrying one wins. Values are NEVER
+  // percent-decoded (`%61%61` is not the hex `aa`) — decoding derives a different content key.
+  var SALT_VALUE_RE = /(?:^|[&?])salt=([0-9a-fA-F]+)/;
+
+  /** Split a URN into its `base` (all the retrieval key derives from) and its salt (or null). */
+  function splitSaltQuery(s) {
+    var ampIdx = s.indexOf(SALT_AFTER_AMP);
+    for (var at = s.indexOf("?"); at >= 0; at = s.indexOf("?", at + 1)) {
+      if (ampIdx >= 0 && ampIdx < at) ampIdx = s.indexOf(SALT_AFTER_AMP, at);
+      var isQuery = s.slice(at + 1, at + 1 + SALT_PARAM.length) === SALT_PARAM || ampIdx > at;
+      if (!isQuery) continue;
+      var m = SALT_VALUE_RE.exec(s.slice(at + 1));
+      return { base: s.slice(0, at), salt: m ? m[1].toLowerCase() : null };
+    }
+    return { base: s, salt: null };
+  }
+
+  // The default view is a DERIVATION-time convention, not part of the URN: a parser that invents
+  // `index.html` reports a resource key its input never contained. So a URN naming no resource is
+  // completed HERE, before parsing, and the parser stays honest about what it was handed.
+  var BARE_URN_RE = /^((?:urn:dig:chia:|chia:\/\/)[0-9a-fA-F]{64}(?::[0-9a-fA-F]{64})?)\/?(\?.*)?$/;
+  function withDefaultView(raw) {
+    var s = String(raw == null ? "" : raw).trim();
+    var m = BARE_URN_RE.exec(s);
+    return m ? m[1] + "/index.html" + (m[2] || "") : s;
+  }
+
   function parseDigRef(raw) {
     var s = String(raw == null ? "" : raw).trim();
     if (!s) return null;
     if (s.indexOf("urn:dig:chia:") === 0) s = s.slice("urn:dig:chia:".length);
     else if (s.indexOf("chia://") === 0) s = s.slice("chia://".length);
     else return null;
-    var salt = null;
-    var qi = s.indexOf("?");
-    if (qi !== -1) {
-      var qs = new URLSearchParams(s.slice(qi + 1));
-      var v = qs.get("salt");
-      salt = v && /^[0-9a-fA-F]+$/.test(v) ? v.toLowerCase() : null;
-      s = s.slice(0, qi);
-    }
+    var split = splitSaltQuery(s);
+    var salt = split.salt;
+    s = split.base;
     var slash = s.indexOf("/");
-    var head = slash === -1 ? s : s.slice(0, slash);
-    var resourceKey = slash === -1 ? "" : s.slice(slash + 1);
-    resourceKey = stripQueryHash(resourceKey).replace(/^\/+/, "") || "index.html";
+    if (slash === -1) return null;
+    var head = s.slice(0, slash);
+    var resourceKey = s.slice(slash + 1);
+    if (!resourceKey) return null;
     var colon = head.indexOf(":");
     var storeId = (colon === -1 ? head : head.slice(0, colon)).toLowerCase();
     var root = colon === -1 ? null : canonicalizeRoot(head.slice(colon + 1));
@@ -151,7 +188,8 @@
     var ref = String(rawRef == null ? "" : rawRef).trim();
     if (!ref) return { kind: "external" };
     if (ref.indexOf("chia://") === 0 || ref.indexOf("urn:dig:chia:") === 0) {
-      var parsed = parseDigRef(ref);
+      // A link naming a store but no resource means the store's default view (withDefaultView).
+      var parsed = parseDigRef(withDefaultView(ref));
       if (!parsed) return { kind: "external" };
       return {
         kind: "urn",
@@ -174,7 +212,7 @@
     return relativeResult(ref, cfg, entryKey);
   }
   function readDigUrnGlobal(value) {
-    var parsed = parseDigRef(value);
+    var parsed = parseDigRef(withDefaultView(value));
     if (!parsed) return null;
     return {
       storeId: parsed.storeId,

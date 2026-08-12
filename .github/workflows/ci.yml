@@ -70,7 +70,13 @@ jobs:
       # separate scheduled job .github/workflows/vendor-drift.yml (this stays network-free).
       - name: vendored-asset integrity gate (sha256 vs vendor-manifest.json)
         run: node scripts/check-vendored-assets.mjs
-      # No package.json / dependencies: the sw.js orchestration logic (range planner, parallel
+      # The ONLY dependency is the shared DIG URN conformance table, read from the
+      # @dignetwork/dig-sdk package by test/urn-conformance.test.mjs. It is a devDependency rather
+      # than a copied file on purpose: a copied table drifts, and drifting URN parsers derive
+      # different keys from the same URN. The site itself still ships with no build step.
+      - name: install the shared conformance table (dev-only dependency)
+        run: npm ci
+      # The sw.js orchestration logic (range planner, parallel
       # fan-out, cache-key builders, decrypt-stream assembly, the RPC/GET fetch paths, and the full
       # serveUrn control flow, §205a/§205d/§205e) is tested with Node's built-in test runner + a
       # small in-repo crypto stub (test/stub-dig-client.mjs) — no browser, no wasm build needed. See
@@ -88,7 +94,7 @@ jobs:
           --test-coverage-lines=80
           --test-coverage-branches=80
           --test-coverage-functions=80
-          test/sw.test.mjs test/sw-runtime.test.mjs test/dig-embed.test.mjs test/vendor-map.test.mjs
+          test/sw.test.mjs test/sw-runtime.test.mjs test/urn-conformance.test.mjs test/dig-embed.test.mjs test/vendor-map.test.mjs
 
   a11y:
     name: accessibility (axe WCAG 2.2 AA on the served documents)

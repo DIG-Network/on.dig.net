@@ -369,6 +369,37 @@ test("serveUrn: a persistent-cache hit is served after the in-memory cache is cl
   assert.equal(await response.text(), plain);
 });
 
+test("serveUrn: a URN naming NO resource serves the store's default view", async () => {
+  // The default view moved OUT of parseDigUrn (which now reports the empty key the URN actually
+  // carries) and INTO serveUrn, where key derivation happens. This pins the PLACEMENT from both
+  // sides: the companion assertion in test/urn-conformance.test.mjs fails if the default creeps back
+  // into the parser, and this one fails if it was simply dropped — the bytes below are readable only
+  // under the key derived for "index.html".
+  installSwGlobals(`https://${STORE}.on.dig.net/?store=${STORE}&root=${ROOT}`);
+  const plain = "<!doctype html><title>default view</title>";
+  const cipher = encryptChunkForTest(keyFor("index.html", null), enc.encode(plain));
+  stubFetch([
+    wasmRoute,
+    [
+      (u) => u.includes("/content/"),
+      () =>
+        new Response(cipher, {
+          status: 200,
+          headers: {
+            "x-dig-total-length": String(cipher.length),
+            "x-dig-inclusion-proof": "valid-proof",
+            "x-dig-chunk-lens": String(cipher.length),
+          },
+        }),
+    ],
+  ]);
+
+  const { response, persistPromise } = await sw.serveUrn(null, `chia://${STORE}`);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), plain);
+  await persistPromise;
+});
+
 test("serveUrn: a decoy / wrong-key resource fails closed with a 404", async () => {
   installSwGlobals(`https://${STORE}.on.dig.net/?store=${STORE}&root=${ROOT}`);
   // Ciphertext encrypted under a DIFFERENT key ⇒ decryptChunk throws ⇒ 404.
