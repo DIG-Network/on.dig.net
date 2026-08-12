@@ -100,3 +100,32 @@ export function loadRootIsPinned() {
   const factory = new Function(`"use strict"; ${rootIsPinnedSrc} return rootIsPinned;`);
   return factory();
 }
+
+/**
+ * Extract assets/dig-embed.js's DIG URN parsing surface and return it as callables, so the parser
+ * can be run against the shared cross-repo conformance table (test/urn-conformance.test.mjs).
+ *
+ * Like the loaders above this re-hydrates the GENUINE source text — the parser under test is the
+ * shipped one, not a copy. A copy would be free to pass the table while the served asset does not.
+ */
+const URN_CONSTANTS = ["SALT_PARAM", "SALT_AFTER_AMP", "SALT_VALUE_RE", "BARE_URN_RE"];
+const URN_FUNCTIONS = ["splitSaltQuery", "withDefaultView", "canonicalizeRoot", "parseDigRef", "readDigUrnGlobal"];
+
+export function loadUrnParser() {
+  const src = readFileSync(embedPath, "utf8");
+  const parts = URN_CONSTANTS.map((name) => {
+    const m = new RegExp(`^[ \t]*var ${name} = .*;$`, "m").exec(src);
+    if (!m) throw new Error(`dig-embed.js structure changed — the '${name}' declaration is not a single-line 'var'; update load-dig-embed.mjs`);
+    return m[0];
+  }).concat(
+    URN_FUNCTIONS.map((name) => {
+      const fn = extractFunction(src, name);
+      if (!fn) throw new Error(`dig-embed.js structure changed — ${name} not found; update load-dig-embed.mjs`);
+      return fn;
+    })
+  );
+  const factory = new Function(
+    `"use strict"; ${parts.join("\n")} return { ${URN_FUNCTIONS.join(", ")} };`
+  );
+  return factory();
+}

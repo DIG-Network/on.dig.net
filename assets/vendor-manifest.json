@@ -8,7 +8,7 @@
       "source_path": "apps/web/public/embed/dig-embed.js",
       "hub_ref": "f04aa79e48f12fc7a19c5d2c77c716918b3339dd",
       "parity_note": "Carries the #2313 fail-closed rootIsPinned fix (canonicalize root + sentinel allowlist), applied locally here so this deployed asset does not silently skip the merkle-inclusion gate for a non-canonical pinned root; this matches hub's #2302 fix. hub_ref (f04aa79e) predates hub #2302, so this file now leads that ref — re-vendor + re-stamp hub_ref once hub's canonical dig-embed.js carries #2302. hub_ref is the hub commit last touching the source at vendor time.",
-      "sha256": "f46214a4a23ec4c4854377fea64309826b812626678c327375b49ff625b04507"
+      "sha256": "41893d9e09451de53e432758ddbab42a01d2eb7e535d9ee9fb93348f28ff1cab"
     },
     {
       "path": "assets/dig_client.js",

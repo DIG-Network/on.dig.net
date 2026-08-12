@@ -1,0 +1,12 @@
+{
+  "name": "on-dig-net-tests",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only manifest for the browser-asset unit tests. The site itself has NO build step and NO runtime dependency: assets/sw.js and assets/dig-embed.js are shipped verbatim. This exists so the URN conformance runner can read the shared table from @dignetwork/dig-sdk/conformance/urn-parse.json instead of copying it into this repo (a copied table is drift).",
+  "scripts": {
+    "test:urn": "node --test test/urn-conformance.test.mjs"
+  },
+  "devDependencies": {
+    "@dignetwork/dig-sdk": "^0.7.0"
+  }
+}

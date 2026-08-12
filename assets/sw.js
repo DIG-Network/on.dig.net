@@ -623,12 +623,46 @@ function buildDecryptStream(keyHex, ciphertext, lens, firstChunk) {
   return { stream, whenDone };
 }
 
+// --- DIG URN parsing ----------------------------------------------------------------------------
+// The grammar is normative in the SUPERPROJECT: SYSTEM.md § "DIG URN grammar (normative,
+// cross-repo)". It is deliberately NOT restated here — a restated rule drifts, and that is how the
+// ecosystem's parsers came to disagree. Agreement with the siblings is VERIFIED against the shared
+// conformance table shipped in @dignetwork/dig-sdk (test/urn-conformance.test.mjs).
+//
+// Worth saying locally: `?` is a legal resource-key character and the resource key is a
+// retrieval-key input, so splitting at every `?` truncates keys that published content is stored
+// under. The query is split off only when the tail it introduces carries a boundary `salt=`.
+const SALT_PARAM = "salt=";
+const SALT_AFTER_AMP = "&salt=";
+// A boundary `salt=` is one at the start of the tail or right after an `&`; the value is the leading
+// hex run and the first boundary occurrence carrying one wins. Values are NEVER percent-decoded —
+// reading `%61%61` as the hex `aa` derives a different content-decryption key.
+const SALT_VALUE_RE = /(?:^|[&?])salt=([0-9a-fA-F]+)/;
+
+/** Split a URN into its `base` (all the retrieval key derives from) and its salt (or null). */
+function splitSaltQuery(s) {
+  let ampIdx = s.indexOf(SALT_AFTER_AMP);
+  for (let at = s.indexOf("?"); at >= 0; at = s.indexOf("?", at + 1)) {
+    if (ampIdx >= 0 && ampIdx < at) ampIdx = s.indexOf(SALT_AFTER_AMP, at);
+    const isQuery = s.startsWith(SALT_PARAM, at + 1) || ampIdx > at;
+    if (!isQuery) continue;
+    const m = SALT_VALUE_RE.exec(s.slice(at + 1));
+    return { base: s.slice(0, at), salt: m ? m[1].toLowerCase() : null };
+  }
+  return { base: s, salt: null };
+}
+
 /**
  * Parse a chia:// or urn:dig:chia:… string.
  * Handles the forms emitted by the browser extension:
  *   chia://<storeId>[:<root>]/<resourceKey>[?salt=<hex>]
  *   urn:dig:chia:<storeId>[:<root>]/<resourceKey>
  * Returns { storeId, root, resourceKey, salt } or null on parse failure.
+ *
+ * The resource key is returned VERBATIM — including any `#`, which is a real key character here and
+ * not a fragment — and a URN naming no resource yields an empty key rather than an invented one.
+ * Completing an empty key with the default view is the CALLER's job (serveUrn), because that choice
+ * belongs to key derivation, not to reading the URN.
  */
 function parseDigUrn(raw) {
   // Normalise: strip chia:// prefix or urn:dig:chia: prefix.
@@ -637,23 +671,17 @@ function parseDigUrn(raw) {
   else if (s.startsWith("urn:dig:chia:")) s = s.slice(13);
   else return null;
 
-  // Optional ?salt= query param.
-  let salt = null;
-  const qi = s.indexOf("?");
-  if (qi !== -1) {
-    const qs = new URLSearchParams(s.slice(qi + 1));
-    salt = qs.get("salt") || null;
-    s = s.slice(0, qi);
-  }
+  const { base, salt } = splitSaltQuery(s);
+  s = base;
 
   // <storeId>[:<root>]/<resourceKey>
   const slash = s.indexOf("/");
   const head = slash === -1 ? s : s.slice(0, slash);
-  const resourceKey = slash === -1 ? "index.html" : s.slice(slash + 1) || "index.html";
+  const resourceKey = slash === -1 ? "" : s.slice(slash + 1);
 
   const colon = head.indexOf(":");
-  const storeId = colon === -1 ? head : head.slice(0, colon);
-  const root = colon === -1 ? null : head.slice(colon + 1);
+  const storeId = (colon === -1 ? head : head.slice(0, colon)).toLowerCase();
+  const root = colon === -1 ? null : canonicalizeRoot(head.slice(colon + 1));
 
   if (!storeId) return null;
   return { storeId, root: root || null, resourceKey, salt };
@@ -755,6 +783,9 @@ async function serveUrn(path, digUrl) {
     const p = parseDigUrn(digUrl);
     if (!p) return { response: new Response("Invalid DIG URN", { status: 400 }) };
     ({ storeId, root, resourceKey, salt } = p);
+    // The default view is applied HERE, not in the parser: a URN naming no resource means the
+    // store's default document, and that convention belongs to key derivation (matches urnForPath).
+    resourceKey = resourceKey || "index.html";
     root = root || CFG.root || "latest";
     salt = salt || CFG.salt || null;
   } else {

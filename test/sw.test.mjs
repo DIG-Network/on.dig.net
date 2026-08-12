@@ -250,10 +250,12 @@ test("parseDigUrn", async () => {
     salt: null,
   });
 
+  // A URN naming no resource parses to an EMPTY key — the parser reports what it was given, and
+  // serveUrn completes it with the default view (see test/sw-runtime.test.mjs).
   assert.deepEqual(parseDigUrn("chia://abc123"), {
     storeId: "abc123",
     root: null,
-    resourceKey: "index.html",
+    resourceKey: "",
     salt: null,
   });
 
