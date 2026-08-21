@@ -22,3 +22,9 @@ crash.log
 tests/a11y/node_modules/
 tests/a11y/test-results/
 tests/a11y/playwright-report/
+
+# URN parse-conformance test — the dig-sdk dependency carrying the contract table is installed
+# in CI; only the source + lockfile are committed.
+tests/conformance/node_modules/
+# Code-intelligence index (gitnexus): regenerable, per-worktree, never committed.
+.gitnexus/

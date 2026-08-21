@@ -23,8 +23,18 @@
  *       it DOES cover relative fetch/XHR + <img>/<script>/<link>/<a> rewriting for a typical app.
  *   The snippet auto-detects the best available tier and degrades gracefully.
  *
- * Dependency-free vanilla JS. The pure logic below is kept byte-compatible with
- * apps/web/lib/embed-core.js (the unit-tested single source of truth).
+ * Dependency-free vanilla JS. The pure logic below is a PORT of hub.dig.net's
+ * apps/web/lib/embed-core.js, not a byte copy of it, and this file is not held byte-identical to any
+ * other: it carries on.dig.net's own fail-closed rootIsPinned (#2313), and hub's copy carries hub's.
+ * What IS pinned mechanically, rather than asked for in a comment:
+ *   * the DIG URN parser         -> tests/conformance/urn-conformance.test.mjs, against the table
+ *                                   shipped by @dignetwork/dig-sdk (conformance/urn-parse.json),
+ *                                   and pinned equal to assets/sw.js parseDigUrn
+ *   * the extension->MIME map    -> test/vendor-map.test.mjs, pinned equal to assets/sw.js
+ *   * these bytes vs their provenance -> scripts/check-vendored-assets.mjs (sha256 in
+ *                                   assets/vendor-manifest.json), and the daily vendor-drift job
+ * A "keep in sync" comment is what let this file ship the parser hub had already replaced (#17), so
+ * anything that must agree gets a test, and anything without one is NOT claimed to agree.
  */
 (function () {
   "use strict";
@@ -61,35 +71,69 @@
   var ASSET_BASE = SELF_ORIGIN + "/dig-client";
 
   // ===============================================================================================
-  // PURE LOGIC (mirror of apps/web/lib/embed-core.js — keep in sync; that module is the test surface)
+  // PURE LOGIC. Ported from apps/web/lib/embed-core.js. The parts that MUST agree with another
+  // implementation are pinned by the tests named in the file header — not by this banner.
   // ===============================================================================================
   function stripQueryHash(p) {
     return String(p == null ? "" : p).split("#")[0].split("?")[0];
   }
+  // DIG URN PARSE. This snippet is served standalone to third-party pages, so it cannot import the
+  // canonical parser (@dignetwork/dig-sdk). The algorithm below is therefore a PORT of that parser,
+  // not an independent grammar, and it is held to the same machine-readable table:
+  // tests/conformance/urn-conformance.test.mjs extracts these functions from THIS file and runs them
+  // against @dignetwork/dig-sdk/conformance/urn-parse.json. Change one and that test fails. The same
+  // test pins this copy byte-identical to assets/sw.js parseDigUrn, so the two can never disagree.
+  //
+  // The previous version here split at the FIRST "?" unconditionally and read the salt through
+  // URLSearchParams (and ran the key through stripQueryHash). All three diverge from the contract:
+  // the split truncates a real resource key that legitimately contains a "?" (…/report?year=2024.csv),
+  // stripQueryHash additionally truncates one containing a "#" (…/notes#1.md), and URLSearchParams
+  // percent-DECODES the salt, so ?salt=%66%66 yields a plausible-looking but WRONG decryption key
+  // instead of no salt at all. Each addresses the wrong bytes, for content already published on chain.
+  var SALT_PARAM_NAME = "salt=";
+  var SALT_AFTER_AMP = "&" + SALT_PARAM_NAME;
+  var SALT_QUERY_VALUE_RE = /(?:^|[&?])salt=([0-9a-fA-F]+)/;
+
+  // Split a URN into its query-free base and the salt its query carried. A "?" only STARTS the
+  // query when the tail it introduces actually carries a salt PARAMETER at a boundary (the start
+  // of the query, or right after an "&"); otherwise the "?" is an ordinary character of the
+  // resource key, and splitting there would truncate a real published key. The FIRST qualifying
+  // "?" wins, because it strips the most — on "a?salt=aa?salt=bb" the whole tail goes, so no later
+  // salt survives inside the key. Linear by construction: the tail is materialised once, for the
+  // "?" that won, never once per candidate (this parses untrusted input from the embedding page).
+  function splitQuery(s) {
+    var ampIdx = s.indexOf(SALT_AFTER_AMP);
+    for (var at = s.indexOf("?"); at >= 0; at = s.indexOf("?", at + 1)) {
+      if (ampIdx >= 0 && ampIdx < at) ampIdx = s.indexOf(SALT_AFTER_AMP, at);
+      var startsWithSalt =
+        s.slice(at + 1, at + 1 + SALT_PARAM_NAME.length) === SALT_PARAM_NAME;
+      if (!startsWithSalt && ampIdx <= at) continue;
+      var m = SALT_QUERY_VALUE_RE.exec(s.slice(at + 1));
+      return { base: s.slice(0, at), salt: m ? m[1].toLowerCase() : null };
+    }
+    return { base: s, salt: null };
+  }
+
   function parseDigRef(raw) {
     var s = String(raw == null ? "" : raw).trim();
     if (!s) return null;
     if (s.indexOf("urn:dig:chia:") === 0) s = s.slice("urn:dig:chia:".length);
     else if (s.indexOf("chia://") === 0) s = s.slice("chia://".length);
     else return null;
-    var salt = null;
-    var qi = s.indexOf("?");
-    if (qi !== -1) {
-      var qs = new URLSearchParams(s.slice(qi + 1));
-      var v = qs.get("salt");
-      salt = v && /^[0-9a-fA-F]+$/.test(v) ? v.toLowerCase() : null;
-      s = s.slice(0, qi);
-    }
+    var split = splitQuery(s);
+    s = split.base;
     var slash = s.indexOf("/");
     var head = slash === -1 ? s : s.slice(0, slash);
-    var resourceKey = slash === -1 ? "" : s.slice(slash + 1);
-    resourceKey = stripQueryHash(resourceKey).replace(/^\/+/, "") || "index.html";
+    // The key is taken VERBATIM from the query-free base: every character the query did not claim
+    // belongs to it, including "?" and "#". A reference naming a store but no resource resolves to
+    // the default view.
+    var resourceKey = (slash === -1 ? "" : s.slice(slash + 1)).replace(/^\/+/, "") || "index.html";
     var colon = head.indexOf(":");
     var storeId = (colon === -1 ? head : head.slice(0, colon)).toLowerCase();
     var root = colon === -1 ? null : canonicalizeRoot(head.slice(colon + 1));
     if (!/^[0-9a-f]{64}$/.test(storeId)) return null;
     if (root && !/^[0-9a-f]{64}$/.test(root)) return null;
-    return { storeId: storeId, root: root || null, resourceKey: resourceKey, salt: salt };
+    return { storeId: storeId, root: root || null, resourceKey: resourceKey, salt: split.salt };
   }
   // Canonical form of a generation root: trimmed, lowercased, `0x`-stripped. Applied ONCE where a
   // root ENTERS (URN parse, cfg) so the pinned predicate, the RPC `root` param, and verifyInclusion

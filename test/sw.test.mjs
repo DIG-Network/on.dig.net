@@ -242,30 +242,38 @@ test("parseChunkLensHeader", async () => {
 
 test("parseDigUrn", async () => {
   const { parseDigUrn } = await loadSw();
+  const store = "a".repeat(64); // a store id is 64 lowercase hex; nothing else is a DIG URN
 
-  assert.deepEqual(parseDigUrn("chia://abc123/foo/bar.html"), {
-    storeId: "abc123",
+  assert.deepEqual(parseDigUrn(`chia://${store}/foo/bar.html`), {
+    storeId: store,
     root: null,
     resourceKey: "foo/bar.html",
     salt: null,
   });
 
-  assert.deepEqual(parseDigUrn("chia://abc123"), {
-    storeId: "abc123",
+  assert.deepEqual(parseDigUrn(`chia://${store}`), {
+    storeId: store,
     root: null,
     resourceKey: "index.html",
     salt: null,
   });
 
-  assert.deepEqual(parseDigUrn("urn:dig:chia:abc123:" + "d".repeat(64) + "/index.html?salt=ff"), {
-    storeId: "abc123",
+  assert.deepEqual(parseDigUrn(`urn:dig:chia:${store}:${"d".repeat(64)}/index.html?salt=ff`), {
+    storeId: store,
     root: "d".repeat(64),
     resourceKey: "index.html",
     salt: "ff",
   });
 
   assert.equal(parseDigUrn("https://example.com"), null);
+  // A store id that is not 64 hex cannot address a store, so it is not a URN — serveUrn turns this
+  // into a 400 rather than asking RPC for a key it could never have derived correctly.
+  assert.equal(parseDigUrn("chia://abc123/foo/bar.html"), null);
 });
+
+// The FULL parse contract for this function (28 cases, salt-boundary + no-percent-decoding rules) is
+// held in tests/conformance/urn-conformance.test.mjs against the table shipped by
+// @dignetwork/dig-sdk. The cases above are the shapes the resolver's own call sites depend on.
 
 test("contentType", async () => {
   const { contentType } = await loadSw();

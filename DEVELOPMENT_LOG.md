@@ -42,3 +42,4 @@ already lives in the measured lib modules (that lib/bin split is the whole desig
 Under default features the bins aren't even compiled, so the exclusion is belt-and-braces. Baseline
 at gate wire-up was already 99.47% lines / 99.01% functions, so the gate wired green with no new
 tests. Verified the gate actually FIRES: `--fail-under-lines 100` exits 1, `80` exits 0.
+

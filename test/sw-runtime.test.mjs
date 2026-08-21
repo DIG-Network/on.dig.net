@@ -24,7 +24,10 @@ const REAL_WASM = new Uint8Array(readFileSync(path.join(here, "..", "assets", "d
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const STORE = "store123";
+// A REAL store id, i.e. 64 lowercase hex. parseDigUrn rejects anything else (the ratified parse
+// contract: "a store id that is not 64 hex is not a URN"), so a placeholder id here would exercise
+// a shape the resolver can never be asked to serve.
+const STORE = "b".repeat(64);
 const ROOT = "a".repeat(64); // a concrete, PINNED (64-hex) generation root
 const RK = `rk:${STORE}:index.html`; // retrievalKey() stub output for (STORE, "index.html")
 
