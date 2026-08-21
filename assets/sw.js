@@ -624,39 +624,67 @@ function buildDecryptStream(keyHex, ciphertext, lens, firstChunk) {
 }
 
 /**
- * Parse a chia:// or urn:dig:chia:… string.
- * Handles the forms emitted by the browser extension:
+ * Parse a chia:// or urn:dig:chia:… string into { storeId, root, resourceKey, salt }, or null when
+ * it is not a DIG URN.
  *   chia://<storeId>[:<root>]/<resourceKey>[?salt=<hex>]
- *   urn:dig:chia:<storeId>[:<root>]/<resourceKey>
- * Returns { storeId, root, resourceKey, salt } or null on parse failure.
+ *   urn:dig:chia:<storeId>[:<root>]/<resourceKey>[?salt=<hex>]
+ *
+ * A module Service Worker boots with no bundler, so this cannot import the canonical parser
+ * (@dignetwork/dig-sdk); it is a PORT of it, held to the same machine-readable table.
+ * tests/conformance/urn-conformance.test.mjs extracts these functions from THIS file and runs them
+ * against @dignetwork/dig-sdk/conformance/urn-parse.json, and pins them byte-identical to
+ * assets/dig-embed.js parseDigRef — so the two parsers on this domain cannot disagree about where a
+ * salt lives. `resourceKey` and `salt` feed the retrieval key and the decryption key, so a
+ * disagreement is not cosmetic: it reads the wrong bytes.
+ *
+ * The previous version here split at the FIRST "?" and read the salt through URLSearchParams with no
+ * hex validation, so it accepted a percent-DECODED value, a value carrying a fragment, and an
+ * outright non-hex one — each a plausible-looking but WRONG decryption key rather than no salt.
  */
-function parseDigUrn(raw) {
-  // Normalise: strip chia:// prefix or urn:dig:chia: prefix.
-  let s = raw.trim();
-  if (s.startsWith("chia://")) s = s.slice(7);
-  else if (s.startsWith("urn:dig:chia:")) s = s.slice(13);
-  else return null;
+const SALT_PARAM_NAME = "salt=";
+const SALT_AFTER_AMP = "&" + SALT_PARAM_NAME;
+const SALT_QUERY_VALUE_RE = /(?:^|[&?])salt=([0-9a-fA-F]+)/;
 
-  // Optional ?salt= query param.
-  let salt = null;
-  const qi = s.indexOf("?");
-  if (qi !== -1) {
-    const qs = new URLSearchParams(s.slice(qi + 1));
-    salt = qs.get("salt") || null;
-    s = s.slice(0, qi);
+// Split a URN into its query-free base and the salt its query carried. A "?" only STARTS the
+// query when the tail it introduces actually carries a salt PARAMETER at a boundary (the start
+// of the query, or right after an "&"); otherwise the "?" is an ordinary character of the
+// resource key, and splitting there would truncate a real published key. The FIRST qualifying
+// "?" wins, because it strips the most — on "a?salt=aa?salt=bb" the whole tail goes, so no later
+// salt survives inside the key. Linear by construction: the tail is materialised once, for the
+// "?" that won, never once per candidate (this parses untrusted input from the embedding page).
+function splitQuery(s) {
+  let ampIdx = s.indexOf(SALT_AFTER_AMP);
+  for (let at = s.indexOf("?"); at >= 0; at = s.indexOf("?", at + 1)) {
+    if (ampIdx >= 0 && ampIdx < at) ampIdx = s.indexOf(SALT_AFTER_AMP, at);
+    const startsWithSalt =
+      s.slice(at + 1, at + 1 + SALT_PARAM_NAME.length) === SALT_PARAM_NAME;
+    if (!startsWithSalt && ampIdx <= at) continue;
+    const m = SALT_QUERY_VALUE_RE.exec(s.slice(at + 1));
+    return { base: s.slice(0, at), salt: m ? m[1].toLowerCase() : null };
   }
+  return { base: s, salt: null };
+}
 
-  // <storeId>[:<root>]/<resourceKey>
+function parseDigUrn(raw) {
+  let s = String(raw == null ? "" : raw).trim();
+  if (!s) return null;
+  if (s.indexOf("urn:dig:chia:") === 0) s = s.slice("urn:dig:chia:".length);
+  else if (s.indexOf("chia://") === 0) s = s.slice("chia://".length);
+  else return null;
+  const split = splitQuery(s);
+  s = split.base;
   const slash = s.indexOf("/");
   const head = slash === -1 ? s : s.slice(0, slash);
-  const resourceKey = slash === -1 ? "index.html" : s.slice(slash + 1) || "index.html";
-
+  // The key is taken VERBATIM from the query-free base: every character the query did not claim
+  // belongs to it, including "?" and "#". A reference naming a store but no resource resolves to
+  // the default view.
+  const resourceKey = (slash === -1 ? "" : s.slice(slash + 1)).replace(/^\/+/, "") || "index.html";
   const colon = head.indexOf(":");
-  const storeId = colon === -1 ? head : head.slice(0, colon);
-  const root = colon === -1 ? null : head.slice(colon + 1);
-
-  if (!storeId) return null;
-  return { storeId, root: root || null, resourceKey, salt };
+  const storeId = (colon === -1 ? head : head.slice(0, colon)).toLowerCase();
+  const root = colon === -1 ? null : canonicalizeRoot(head.slice(colon + 1));
+  if (!/^[0-9a-f]{64}$/.test(storeId)) return null;
+  if (root && !/^[0-9a-f]{64}$/.test(root)) return null;
+  return { storeId: storeId, root: root || null, resourceKey: resourceKey, salt: split.salt };
 }
 
 /**

@@ -6,9 +6,9 @@
       "kind": "hub-vendored",
       "source_repo": "DIG-Network/hub.dig.net",
       "source_path": "apps/web/public/embed/dig-embed.js",
-      "hub_ref": "f04aa79e48f12fc7a19c5d2c77c716918b3339dd",
-      "parity_note": "Carries the #2313 fail-closed rootIsPinned fix (canonicalize root + sentinel allowlist), applied locally here so this deployed asset does not silently skip the merkle-inclusion gate for a non-canonical pinned root; this matches hub's #2302 fix. hub_ref (f04aa79e) predates hub #2302, so this file now leads that ref — re-vendor + re-stamp hub_ref once hub's canonical dig-embed.js carries #2302. hub_ref is the hub commit last touching the source at vendor time.",
-      "sha256": "f46214a4a23ec4c4854377fea64309826b812626678c327375b49ff625b04507"
+      "hub_ref": "070612df86e1b54a4e9c5225c4febeb771caa8a1",
+      "parity_note": "This file is a PORT of hub's source, not a byte copy, and two deltas are deliberate. (1) #2313 fail-closed rootIsPinned (canonicalize root + sentinel allowlist), so this deployed asset cannot silently skip the merkle-inclusion gate for a non-canonical pinned root; hub's copy treats a malformed root as unpinned. (2) The DIG URN parser was reconciled here against hub's ratified version (hub #260, v0.30.0) rather than byte-copied, so it keeps this file's tolerant root handling (canonicalizeRoot, i.e. an 0x-prefixed root still resolves) while adopting the contract's salt-boundary and no-percent-decoding rules; the previous copy predated hub #260 and derived WRONG retrieval keys (on.dig.net#17). Agreement is no longer asserted here: tests/conformance/urn-conformance.test.mjs holds this file's parser to @dignetwork/dig-sdk/conformance/urn-parse.json, the same table hub is held to, and pins it equal to assets/sw.js. hub_ref is the hub commit this port was reconciled against; the daily vendor-drift job will report the two deltas above as code drift, which is expected.",
+      "sha256": "7d69ec7c0e84cc62caeb2f4c94c41a5de6f82b41c460f1f19e2e790600f1a3ed"
     },
     {
       "path": "assets/dig_client.js",

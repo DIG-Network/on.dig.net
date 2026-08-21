@@ -1,0 +1,13 @@
+{
+  "name": "on-dig-net-urn-conformance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Holds both of on.dig.net's standalone DIG URN parsers — assets/dig-embed.js parseDigRef and assets/sw.js parseDigUrn — to the ratified cross-repo parse contract, read from the INSTALLED @dignetwork/dig-sdk package (conformance/urn-parse.json). Lives in its own package because the repo root is a Rust crate with no package.json, and the table must come from a real dependency rather than a copy.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test urn-conformance.test.mjs"
+  },
+  "devDependencies": {
+    "@dignetwork/dig-sdk": "0.7.0"
+  }
+}

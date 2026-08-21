@@ -283,6 +283,34 @@ Additionally, the extension→MIME `contentType()` map is mirrored in BOTH `asse
 `assets/sw.js` (a module worker cannot import hub's `embed-core.ts`); `test/vendor-map.test.mjs`
 asserts the two copies stay byte-identical.
 
+### 8.1 DIG URN parsing is held to the ratified cross-repo table
+
+Both loaders parse DIG URNs: `assets/dig-embed.js` `parseDigRef` and `assets/sw.js` `parseDigUrn`.
+Neither can import the canonical parser — one is served standalone to third-party pages, the other is
+a module Service Worker that boots with no bundler — so each carries a PORT of it.
+
+`resourceKey` and `salt` are the inputs to the retrieval key and the decryption key. Two parsers that
+disagree about where a salt lives therefore derive different keys and read different bytes, so
+agreement MUST be verifiable rather than asserted:
+
+* the AUTHORITY is `@dignetwork/dig-sdk/conformance/urn-parse.json` (28 cases), read from the
+  INSTALLED package — never copied into this repo, because a copied table drifts silently;
+* `tests/conformance/urn-conformance.test.mjs` extracts both functions from the real shipped asset
+  files and runs them against that table, and additionally pins the two ports token-for-token.
+
+The normative rules that table encodes, restated here because they are easy to get wrong and each
+wrong version derives a DIFFERENT key rather than failing:
+
+* a `?` starts the query ONLY when the tail it introduces carries a `salt=` at a boundary (query
+  start, or immediately after an `&`); otherwise it is an ordinary character of the resource key,
+  because a `?` is legal in a published key. The FIRST qualifying `?` wins.
+* the salt value is NOT percent-decoded, and is the LEADING HEX RUN of the literal text. `?salt=%66%66`
+  therefore carries no salt — it does not carry the salt `ff`.
+* the parameter name is case-sensitive; an empty or valueless `salt` is no salt at all.
+* only the query is removed. A key containing a literal `#` (`notes#1.md`) is preserved verbatim; a
+  fragment after a salt is part of the discarded query tail.
+* a store id (and a root, when present) is 64 hex; anything else is not a DIG URN.
+
 Re-vendoring is a deliberate, documented step — see `runbooks/deploy.md`.
 
 ## 9. Loader performance: parallel range fetch, streaming decrypt, persistent caching
