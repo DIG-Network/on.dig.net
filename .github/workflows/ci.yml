@@ -74,7 +74,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - name: install cargo-lambda + zig (arm64 cross-compile)
-        run: pip install cargo-lambda ziglang
+        run: pip install "cargo-lambda==1.9.2" "ziglang==0.16.0"
       - name: build both lambda zips (arm64)
         run: |
           set -euo pipefail

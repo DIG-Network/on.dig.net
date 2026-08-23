@@ -40,8 +40,17 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+      # PINNED, not floating. Rust 1.98.0 began emitting `-Wl,--fix-cortex-a53-843419` for
+      # aarch64-unknown-linux-gnu, which zig's linker rejects; cargo-lambda 1.9.1 bundles
+      # cargo-zigbuild 0.20.1, which does not filter the flag, so run 32498562051 could not link
+      # the Lambda and this deploy failed on a tip nothing in the repo had changed. cargo-lambda
+      # 1.9.2 carries the cargo-zigbuild 0.23.0 uplift that filters it.
+      #
+      # Both versions are pinned so a toolchain move arrives as a deliberate bump reviewed here,
+      # and so ci.yml's `lambda-build` gate and this step build with the SAME toolchain — an
+      # unpinned gate can pass on a version the later deploy no longer resolves to.
       - name: install cargo-lambda + zig (arm64 cross-compile)
-        run: pip install cargo-lambda ziglang
+        run: pip install "cargo-lambda==1.9.2" "ziglang==0.16.0"
       - name: build resolver lambda zip (arm64)
         id: build
         run: |
