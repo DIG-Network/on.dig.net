@@ -55,6 +55,34 @@ jobs:
           --fail-under-functions 80
           --fail-under-regions 80
 
+  # REGRESSION GATE (deploy run 32498562051): the arm64 cross-compile that deploy.yml performs was
+  # not exercised anywhere in CI, so a toolchain drift broke it silently and was only discovered
+  # after merge, at deploy time, with the pointer already frozen. Rust 1.98.0 began emitting
+  # `-Wl,--fix-cortex-a53-843419` for aarch64-unknown-linux-gnu; zig's linker rejects the flag, so
+  # every `cargo lambda build --arm64` failed to link.
+  #
+  # This job runs the SAME build deploy.yml runs, minus AWS: if the Lambda cannot be cross-compiled,
+  # the PR is red instead of the deploy. It must stay byte-for-byte in step with deploy.yml's build
+  # (same toolchain, same pinned cargo-lambda + ziglang, same targets and features).
+  lambda-build:
+    name: arm64 lambda cross-compile (mirrors deploy.yml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - name: install cargo-lambda + zig (arm64 cross-compile)
+        run: pip install cargo-lambda ziglang
+      - name: build both lambda zips (arm64)
+        run: |
+          set -euo pipefail
+          cargo lambda build --release --arm64 --features aws --bin bootstrap --output-format zip
+          cargo lambda build --release --arm64 --features aws --bin watcher --output-format zip
+          test -f target/lambda/bootstrap/bootstrap.zip
+          test -f target/lambda/watcher/bootstrap.zip
+
   js:
     name: js test
     runs-on: ubuntu-latest
