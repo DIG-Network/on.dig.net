@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.13] - 2026-08-24
+
+### Documentation
+- **devlog:** Record the crossed-toolchain deploy break and its three lessons (#21)
+
 ## [0.5.12] - 2026-08-24
 
 ### Bug Fixes
