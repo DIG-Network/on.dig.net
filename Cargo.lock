@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "on-dig-net-resolver"
-version = "0.5.12"
+version = "0.5.13"
 dependencies = [
  "aws-config",
  "aws-sdk-cloudfront",
