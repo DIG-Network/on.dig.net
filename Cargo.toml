@@ -1,6 +1,6 @@
 [package]
 name = "on-dig-net-resolver"
-version = "0.5.13"
+version = "0.5.14"
 edition = "2021"
 rust-version = "1.94.1"
 license = "GPL-2.0-only"
@@ -33,9 +33,14 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 aws-sdk-cloudfront = { version = "1", optional = true }
 # Just the Chia wire TYPES (Coin + its `coin_id()` naming hash) to compute a child coin's own id
 # from the `{parent_coin_info, puzzle_hash, amount}` triple coinset.org returns — NOT the full
-# chia-wallet-sdk/CLVM stack (no puzzle execution needed for a coin-lineage walk). Same version
-# hub.dig.net's anchor-watcher pins, so the ecosystem resolves one shared version.
-chia-protocol = { version = "0.26", default-features = false, optional = true }
+# chia-wallet-sdk/CLVM stack (no puzzle execution needed for a coin-lineage walk).
+#
+# Held at the ecosystem chia ceiling, which is set by the newest `chia-wallet-sdk` release
+# (0.36.0) rather than by the newest primitive release: the primitives publish ahead of the SDK
+# (0.48 at the time of writing) and are unreachable to anything that also links the SDK. This
+# crate links no SDK, but it shares a wire format with crates that do, so it tracks the same
+# ceiling. Verify with `.claude/scripts/chia-ceiling-audit.sh` before changing.
+chia-protocol = { version = "0.36.1", default-features = false, optional = true }
 hex = { version = "0.4", optional = true }
 
 [features]
