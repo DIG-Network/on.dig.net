@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.14] - 2026-08-27
+
+### Bug Fixes
+- **deps:** Bring chia-protocol onto the chia-wallet-sdk 0.36 ceiling (0.36.1) (#22)
+
 ## [0.5.13] - 2026-08-24
 
 ### Documentation
